@@ -20,9 +20,14 @@ export default defineNuxtConfig({
       apiBase: 'http://localhost:4000/api',
       /**
        * PrimeVue 5 Community licence key. Free for this shop, but required —
-       * without it PrimeVue may render a licence notice. See app/.env.example.
+       * without it PrimeVue logs a licence warning. See app/.env.example.
+       *
+       * The key name must be exactly `PRIMEUI_LICENSE`: @primevue/nuxt-module reads
+       * `runtimeConfig.public.PRIMEUI_LICENSE` verbatim, so the usual camelCase
+       * (`primeuiLicense`) is silently ignored and the warning never goes away.
+       * Populated from NUXT_PUBLIC_PRIMEUI_LICENSE.
        */
-      primeuiLicense: '',
+      PRIMEUI_LICENSE: '',
     },
   },
 
