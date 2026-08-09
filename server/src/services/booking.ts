@@ -23,7 +23,7 @@ export interface CreateAppointmentInput {
   serviceIds: string[];
   /** UTC instant of the requested start. */
   startAt: Date;
-  client: { phone: string; firstName: string; lastName?: string | null };
+  client: { phone: string; firstName: string; lastName?: string | null | undefined };
   source: AppointmentSource;
   notes?: string | null;
   createdByUserId?: string | null;

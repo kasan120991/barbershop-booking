@@ -40,7 +40,10 @@ export type AuditAction =
   | 'barber.updated'
   | 'barber_schedule.replaced'
   | 'schedule_exception.created'
-  | 'schedule_exception.deleted';
+  | 'schedule_exception.deleted'
+  | 'appointment.created'
+  | 'appointment.cancelled'
+  | 'appointment.status_changed';
 
 export interface AuditInput {
   action: AuditAction;

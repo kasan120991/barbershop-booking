@@ -45,6 +45,7 @@ async function seedShop() {
       name: 'Francis Cutz',
       timezone: 'America/New_York',
       slotGranularityMinutes: 15,
+      bufferMinutes: 5,
       bookingHorizonDays: 30,
       minimumNoticeMinutes: 60,
     },
