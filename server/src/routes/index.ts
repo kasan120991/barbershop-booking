@@ -1,6 +1,7 @@
 import { Router } from 'express';
 
 import { authRouter } from './auth.js';
+import { barberRouter } from './barbers.js';
 import { catalogRouter } from './catalog.js';
 import { deviceRouter } from './devices.js';
 import { healthRouter } from './health.js';
@@ -14,3 +15,4 @@ apiRouter.use(authRouter);
 apiRouter.use(deviceRouter);
 apiRouter.use(staffRouter);
 apiRouter.use(catalogRouter);
+apiRouter.use(barberRouter);

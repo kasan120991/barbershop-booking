@@ -218,19 +218,18 @@ async function seedStaff(serviceIds: string[]) {
       { dayOfWeek, startMinute: MINUTES(13, 30), endMinute: MINUTES(18) },
     ]);
 
-    for (const shift of shifts) {
-      await prisma.barberSchedule.upsert({
-        where: {
-          barberId_dayOfWeek_startMinute: {
-            barberId: barber.id,
-            dayOfWeek: shift.dayOfWeek,
-            startMinute: shift.startMinute,
-          },
-        },
-        update: { endMinute: shift.endMinute },
-        create: { barberId: barber.id, ...shift },
-      });
-    }
+    // REPLACE the week rather than upserting row by row.
+    //
+    // Upserting keyed on startMinute only matches a shift that still begins at the
+    // same minute, so once a schedule has been edited the seeded rows get ADDED
+    // alongside the edited ones — leaving overlapping shifts that violate the app's
+    // own validation. A seed exists to restore a known state, so it replaces.
+    await prisma.$transaction([
+      prisma.barberSchedule.deleteMany({ where: { barberId: barber.id } }),
+      prisma.barberSchedule.createMany({
+        data: shifts.map((shift) => ({ barberId: barber.id, ...shift })),
+      }),
+    ]);
 
     // Booth rent: $250/week, anchored to Monday.
     const existingPlan = await prisma.rentPlan.findFirst({

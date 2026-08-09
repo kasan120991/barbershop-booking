@@ -12,4 +12,5 @@ export * from './events.js';
 export * from './money.js';
 export * from './phone.js';
 export * from './privacy.js';
+export * from './schedule-rules.js';
 export * from './time.js';

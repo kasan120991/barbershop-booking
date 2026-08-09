@@ -35,7 +35,12 @@ export type AuditAction =
   | 'shop_settings.updated'
   | 'shop_hours.replaced'
   | 'shop_closure.created'
-  | 'shop_closure.deleted';
+  | 'shop_closure.deleted'
+  | 'barber.created'
+  | 'barber.updated'
+  | 'barber_schedule.replaced'
+  | 'schedule_exception.created'
+  | 'schedule_exception.deleted';
 
 export interface AuditInput {
   action: AuditAction;
