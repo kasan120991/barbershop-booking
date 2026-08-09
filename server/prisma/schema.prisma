@@ -135,6 +135,9 @@ model ShopSettings {
 
   /// Booking slots are offered on this grid, in minutes.
   slotGranularityMinutes Int @default(15)
+  /// Turnaround after every appointment — time to sweep up and reset the chair.
+  /// Availability subtracts it, so the next bookable start is pushed out by this much.
+  bufferMinutes          Int @default(0)
   /// How far ahead the public booking page will show availability.
   bookingHorizonDays     Int @default(30)
   /// A client cannot book or cancel online within this many minutes of the start.
