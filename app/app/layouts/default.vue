@@ -84,7 +84,7 @@ async function onSwitchMode(next: 'shop' | 'chair') {
             :aria-pressed="mode === 'chair'"
             @click="onSwitchMode('chair')"
           >
-            My chair
+            My Chair
           </button>
         </div>
         <p class="mode-hint">You run the shop and cut hair.</p>
@@ -108,7 +108,7 @@ async function onSwitchMode(next: 'shop' | 'chair') {
         <div class="who">
           <p class="name">{{ auth.displayName }}</p>
           <button type="button" class="signout" :disabled="signingOut" @click="onSignOut">
-            {{ signingOut ? 'Signing out…' : 'Sign out' }}
+            {{ signingOut ? 'Signing Out…' : 'Sign Out' }}
           </button>
         </div>
       </div>

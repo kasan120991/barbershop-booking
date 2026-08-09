@@ -19,19 +19,19 @@ export interface NavItem {
 
 const SHOP_NAV: NavItem[] = [
   { label: 'Calendar', to: '/calendar', adminOnly: true },
-  { label: 'Walk-in queue', to: '/queue', adminOnly: false, showsQueueCount: true },
+  { label: 'Walk-in Queue', to: '/queue', adminOnly: false, showsQueueCount: true },
   { label: 'Clients', to: '/clients', adminOnly: true },
-  { label: 'Services & hours', to: '/services', adminOnly: true },
-  { label: 'Barbers & rent', to: '/barbers', adminOnly: true },
+  { label: 'Services & Hours', to: '/services', adminOnly: true },
+  { label: 'Barbers & Rent', to: '/barbers', adminOnly: true },
   { label: 'Reports', to: '/reports', adminOnly: true },
 ];
 
 const CHAIR_NAV: NavItem[] = [
-  { label: 'My day', to: '/my-day', adminOnly: false },
-  { label: 'Walk-in queue', to: '/queue', adminOnly: false, showsQueueCount: true },
-  { label: 'Take payment', to: '/take-payment', adminOnly: false },
+  { label: 'My Day', to: '/my-day', adminOnly: false },
+  { label: 'Walk-in Queue', to: '/queue', adminOnly: false, showsQueueCount: true },
+  { label: 'Take Payment', to: '/take-payment', adminOnly: false },
   { label: 'Earnings', to: '/earnings', adminOnly: false },
-  { label: 'My rent', to: '/my-rent', adminOnly: false },
+  { label: 'My Rent', to: '/my-rent', adminOnly: false },
 ];
 
 export function useNavigation() {

@@ -14,7 +14,7 @@
 import { loginRequestSchema } from '@francis/shared';
 
 definePageMeta({ layout: 'auth' });
-useHead({ title: 'Sign in — Francis Cutz' });
+useHead({ title: 'Sign In — Francis Cutz' });
 
 const auth = useAuthStore();
 const route = useRoute();
@@ -81,7 +81,7 @@ async function onSubmit() {
 
 <template>
   <div class="login">
-    <h1>Sign in</h1>
+    <h1>Sign In</h1>
 
     <form novalidate @submit.prevent="onSubmit">
       <Message
@@ -138,7 +138,7 @@ async function onSubmit() {
 
       <!-- `label` and `loading` are deprecated in v5 and removed in v6; still the
            idiomatic v5 form, and preferable to hand-rolling a spinner. -->
-      <Button type="submit" label="Sign in" :loading="pending" fluid />
+      <Button type="submit" label="Sign In" :loading="pending" fluid />
     </form>
 
     <p class="foot">Locked out? An admin can reset your password in person.</p>

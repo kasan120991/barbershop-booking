@@ -202,6 +202,12 @@ Recomputed on every queue or appointment mutation, then broadcast.
 - Prisma models `PascalCase` singular; enum values `SCREAMING_SNAKE_CASE`.
 - API routes are `/api/<resource>` in plural kebab-case.
 - Vue components `PascalCase`; composables `useThing()`.
+- **Title case for anything clickable or scannable** — nav items, buttons, headings, tab and column
+  labels, page titles. Lowercase after a hyphen, and leave short articles/prepositions/conjunctions
+  lowercase unless they lead: `Walk-in Queue`, `Services & Hours`, `Sign In`, `Take Payment`.
+  **Sentence case for anything read**: error messages, hints, help text, empty states, and
+  descriptive `aria-label`/`title` attributes. "Incorrect Email Or Password." is the failure mode to
+  avoid — server-side messages in `services/` are sentences and stay that way.
 - Prefer PrimeVue components over hand-rolled UI. **Use the `primevue` MCP** to check component
   APIs rather than guessing — PrimeVue 5 differs from v3/v4 in props and theming. `validate_usage`
   confirms a prop still exists before you write the markup.
