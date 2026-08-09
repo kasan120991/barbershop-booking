@@ -221,6 +221,19 @@ Recomputed on every queue or appointment mutation, then broadcast.
   not exist there. Using it would send the wrong nav and visibly swap after hydration.
 - **Hiding a nav link is not access control.** `ADMIN_ONLY_PATHS` is derived from the same nav model
   and enforced in the route guard, and the API enforces it again. All three, always.
+- **All HTTP goes through `useApi()`** — it forwards cookies during SSR, attaches the CSRF header,
+  and bounces to `/login` on a 401. Endpoints where a 401 is a *legitimate answer* rather than an
+  expired session must be added to `AUTH_EXEMPT`: `/auth/me` (signed out), `/auth/login`, and
+  `/auth/change-password` (wrong current password). Miss one and the interceptor signs the user out
+  mid-form, and the page's own error message becomes unreachable.
+- **"Unreachable" is not "signed out."** A network failure sets `connectionError` and shows a banner;
+  it must never clear the session or redirect to login, which would send someone to a screen that
+  cannot work either.
+- **Toasts go through `useNotify()`**, not `useToast()` directly, so severity and duration stay
+  consistent. `ToastService` and `ConfirmationService` are already registered by
+  `@primevue/nuxt-module` — do not add a plugin for them, it double-registers and warns.
+- Icons come from `@primeicons/vue` as per-icon imports (`@primeicons/vue/calendar`), which
+  tree-shakes. Nav icons live in the nav model, not in the layout.
 - The staff app is **single-theme dark** on purpose — `.fc-dark` is pinned on `<html>` so the shop
   tablet cannot flip to light mode because someone changed an iPad setting.
 - Semantic red is reserved for failure states and is never decorative. The brand accent is amber

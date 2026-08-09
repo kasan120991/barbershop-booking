@@ -47,6 +47,10 @@ const hours = [
         <slot />
       </div>
     </main>
+
+    <!-- Also mounted here: the change-password screen uses this layout and needs to
+         confirm success before it navigates away. -->
+    <Toast position="bottom-right" />
   </div>
 </template>
 

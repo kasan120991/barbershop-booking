@@ -24,6 +24,14 @@ export const useAuthStore = defineStore('auth', () => {
   const csrfToken = ref<string | null>(null);
   /** True once `fetchMe` has settled, so the route guard never acts on unknown state. */
   const resolved = ref(false);
+  /**
+   * The API could not be reached — as distinct from refusing us.
+   *
+   * These must not be conflated: treating an outage as "signed out" sends someone to
+   * a login screen that cannot possibly work, and throws away a session that is
+   * still perfectly valid.
+   */
+  const connectionError = ref(false);
 
   /**
    * The CSRF token is also delivered as a deliberately readable cookie, and that is
@@ -40,14 +48,29 @@ export const useAuthStore = defineStore('auth', () => {
   const isSignedIn = computed(() => user.value !== null);
   const isAdmin = computed(() => user.value?.roles.includes('ADMIN') ?? false);
   const isBarber = computed(() => user.value?.roles.includes('BARBER') ?? false);
+  /** Set by an admin password reset. Nothing else is reachable until it is cleared. */
+  const mustChangePassword = computed(() => user.value?.mustChangePassword ?? false);
 
   const displayName = computed(() =>
     user.value ? `${user.value.firstName} ${user.value.lastName}`.trim() : '',
   );
 
+  const initials = computed(() => {
+    const current = user.value;
+    if (!current) return '';
+    return `${current.firstName[0] ?? ''}${current.lastName[0] ?? ''}`.toUpperCase();
+  });
+
+  /** Drops local state without calling the API. Used by the 401 interceptor. */
+  function clear(): void {
+    user.value = null;
+    csrfToken.value = null;
+  }
+
   /**
    * Resolves the current session. A 401 is the expected signed-out answer, not an
-   * error, so it clears state rather than propagating.
+   * error, so it clears state. A network failure is neither — it leaves the user
+   * alone and raises `connectionError` for the shell to surface.
    */
   async function fetchMe(): Promise<void> {
     const api = useApi();
@@ -57,12 +80,23 @@ export const useAuthStore = defineStore('auth', () => {
       // Restore the token the login response gave us, which this store instance
       // never saw if the page was reloaded.
       csrfToken.value = csrfCookie.value ?? null;
-    } catch {
-      user.value = null;
-      csrfToken.value = null;
+      connectionError.value = false;
+    } catch (error) {
+      if (isConnectionFailure(toApiFailure(error))) {
+        connectionError.value = true;
+      } else {
+        connectionError.value = false;
+        clear();
+      }
     } finally {
       resolved.value = true;
     }
+  }
+
+  /** Re-runs the session check after an outage, for the shell's Retry control. */
+  async function retryConnection(): Promise<void> {
+    resolved.value = false;
+    await fetchMe();
   }
 
   /** Throws on failure; the login page maps the error to a message. */
@@ -75,6 +109,7 @@ export const useAuthStore = defineStore('auth', () => {
 
     user.value = response.user;
     csrfToken.value = response.csrfToken;
+    connectionError.value = false;
     resolved.value = true;
 
     return response.user;
@@ -92,8 +127,7 @@ export const useAuthStore = defineStore('auth', () => {
     } catch {
       // Intentionally ignored — see above.
     } finally {
-      user.value = null;
-      csrfToken.value = null;
+      clear();
     }
   }
 
@@ -101,11 +135,16 @@ export const useAuthStore = defineStore('auth', () => {
     user,
     csrfToken,
     resolved,
+    connectionError,
     isSignedIn,
     isAdmin,
     isBarber,
+    mustChangePassword,
     displayName,
+    initials,
+    clear,
     fetchMe,
+    retryConnection,
     signIn,
     signOut,
   };
