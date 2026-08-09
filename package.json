@@ -16,8 +16,6 @@
     "typecheck": "pnpm -r run typecheck",
     "lint": "pnpm -r run lint",
     "test": "pnpm -r run test",
-    "db:up": "docker compose up -d mysql",
-    "db:down": "docker compose down",
     "db:migrate": "pnpm --filter @francis/server run db:migrate",
     "db:studio": "pnpm --filter @francis/server run db:studio",
     "db:seed": "pnpm --filter @francis/server run db:seed"

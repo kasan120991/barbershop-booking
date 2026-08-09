@@ -4,7 +4,8 @@ packages:
   - app
   - booking
 
-# pnpm 11 blocks dependency build scripts by default (supply-chain hardening).
-# Any package that legitimately needs to run install scripts must be listed here.
-# Keep this list short and justify every entry — that is the whole point of it.
-onlyBuiltDependencies: []
+# pnpm 11 blocks dependency install scripts by default (supply-chain hardening).
+# Only add an entry when a dependency genuinely cannot work without one, and say why.
+allowBuilds:
+  # Downloads the platform-native binary it compiles with. Required by tsup and vitest.
+  esbuild: true

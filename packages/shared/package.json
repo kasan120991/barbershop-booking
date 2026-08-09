@@ -1,0 +1,27 @@
+{
+  "name": "@francis/shared",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Shared API contract — zod schemas, types, socket events, and pure helpers",
+  "exports": {
+    ".": "./src/index.ts",
+    "./money": "./src/money.ts",
+    "./phone": "./src/phone.ts",
+    "./privacy": "./src/privacy.ts",
+    "./events": "./src/events.ts",
+    "./contracts": "./src/contracts/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "zod": "4.4.3"
+  },
+  "devDependencies": {
+    "typescript": "5.9.3",
+    "vitest": "4.1.10"
+  }
+}

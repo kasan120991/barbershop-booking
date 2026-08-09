@@ -77,6 +77,11 @@ through a timezone-aware library (Luxon or `date-fns-tz`) — never raw `Date` m
 schedules cross DST boundaries twice a year and naive arithmetic silently shifts every appointment
 by an hour.
 
+> The local MAMP MySQL runs in the machine's timezone (**EDT**), not UTC, and it is shared with
+> other projects — so do not change its global `time_zone`. Instead the server process pins
+> `TZ=UTC` (see `server/.env.example`), and every stored instant is written by the app rather than
+> by a database-side `CURRENT_TIMESTAMP` default. Keep it that way when the schema lands.
+
 **Snapshot prices and durations.** `AppointmentService` and `QueueEntryService` store their own
 `priceCents` and `durationMinutes` copied at booking time. Editing the service menu must never
 rewrite the history or the revenue of a past cut.
@@ -183,21 +188,24 @@ Recomputed on every queue or appointment mutation, then broadcast.
 
 ```bash
 pnpm install           # once, at the root
-pnpm db:up             # start MySQL in docker
 pnpm dev               # run server + app + booking together
 pnpm dev:server        # or individually
 pnpm typecheck         # must pass across the whole workspace
 pnpm test
 ```
 
+**MySQL comes from MAMP**, not Docker — start it from the MAMP app. It listens on
+**port 8889** with `root`/`root`, and this project uses the `francis_cutz` database.
+
 ## Gotchas
 
 - **Nuxt 4's default `srcDir` is `app/`.** So inside the folder named `app/`, pages live at
   `app/app/pages/`. Same for `booking/app/pages/`. This looks like a mistake and is not — do not
   "fix" it.
-- **pnpm 11 blocks dependency build scripts by default.** If a native dependency fails to install,
-  add it to `onlyBuiltDependencies` in `pnpm-workspace.yaml` — deliberately, with a reason. Prefer
-  dependencies with prebuilt binaries (e.g. `@node-rs/argon2` over `argon2`) to avoid this entirely.
+- **pnpm 11 blocks dependency install scripts by default.** If a native dependency fails to
+  install, add it to **`allowBuilds`** in `pnpm-workspace.yaml` — deliberately, with a reason.
+  (This is `allowBuilds` in pnpm 11, not pnpm 10's `onlyBuiltDependencies`.) Prefer dependencies
+  with prebuilt binaries — e.g. `@node-rs/argon2` over `argon2` — to avoid the question entirely.
 - **Prisma 7 has no postinstall.** Run `prisma generate` explicitly after schema changes; it will
   not happen automatically on install.
 

@@ -1,0 +1,11 @@
+{
+  "extends": "../tsconfig.base.json",
+  "compilerOptions": {
+    // No rootDir/outDir: this config only typechecks (tsup owns the build), and the
+    // root-level tsup/vitest configs sit outside src.
+    "noEmit": true,
+    "types": ["node"],
+    "lib": ["ES2023"]
+  },
+  "include": ["src/**/*.ts", "tsup.config.ts", "vitest.config.ts"]
+}

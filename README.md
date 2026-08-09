@@ -18,15 +18,22 @@ book online or walk in and join a live queue on the shop tablet.
 
 - **Node 22+** — `nvm use 22`
 - **pnpm 11** — `corepack enable pnpm`
-- **Docker** — for local MySQL
+- **MAMP** — provides MySQL on port **8889** (`root`/`root`)
 - A **Stripe** account with Connect enabled (test mode is fine for development)
 
 ## Setup
 
+1. Start MySQL from the MAMP app.
+2. Create a database named `francis_cutz` (phpMyAdmin, or the command below).
+
+```bash
+/Applications/MAMP/Library/bin/mysql80/bin/mysql -h 127.0.0.1 -P 8889 -uroot -proot \
+  -e "CREATE DATABASE IF NOT EXISTS francis_cutz CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci;"
+```
+
 ```bash
 pnpm install
-cp server/.env.example server/.env   # fill in DATABASE_URL and Stripe keys
-pnpm db:up                           # start MySQL
+cp server/.env.example server/.env   # fill in Stripe keys
 pnpm db:migrate                      # apply migrations
 pnpm db:seed                         # shop settings, services, demo barbers
 pnpm dev                             # server + app + booking
@@ -52,6 +59,8 @@ pnpm db:studio        # Prisma Studio
 ## Notes
 
 - All money is stored as **integer cents**. All times are stored **UTC**.
+- MAMP's MySQL runs in the machine's local timezone and is shared with other projects, so the
+  server pins `TZ=UTC` instead of changing MySQL's global `time_zone`.
 - Stripe runs in **test mode** locally. Use `stripe listen --forward-to localhost:4000/api/stripe/webhook`
   to receive webhooks, and card `4242 4242 4242 4242` to pay.
 - Architecture decisions and the rules contributors must follow live in [`CLAUDE.md`](./CLAUDE.md).
