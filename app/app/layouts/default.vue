@@ -16,10 +16,11 @@
  */
 
 import Bars from '@primeicons/vue/bars';
-import ChevronLeft from '@primeicons/vue/chevron-left';
-import ChevronRight from '@primeicons/vue/chevron-right';
 import Key from '@primeicons/vue/key';
 import Refresh from '@primeicons/vue/refresh';
+// Aliased deliberately: PrimeVue 5 ships its own `Sidebar` component, and an
+// unaliased import would collide with the module's auto-import.
+import SidebarIcon from '@primeicons/vue/sidebar';
 import SignOut from '@primeicons/vue/sign-out';
 import type { MenuItem } from 'primevue/menuitem';
 
@@ -131,17 +132,6 @@ async function onSwitchMode(next: 'shop' | 'chair') {
       <div class="rail-foot">
         <button
           type="button"
-          class="collapse"
-          :aria-label="collapsed ? 'Expand navigation' : 'Collapse navigation'"
-          :title="collapsed ? 'Expand' : 'Collapse'"
-          @click="toggleRail"
-        >
-          <component :is="collapsed ? ChevronRight : ChevronLeft" class="chev" aria-hidden="true" />
-          <span v-if="!collapsed">Collapse</span>
-        </button>
-
-        <button
-          type="button"
           class="account"
           aria-haspopup="true"
           :title="auth.displayName"
@@ -169,9 +159,27 @@ async function onSwitchMode(next: 'shop' | 'chair') {
       </div>
 
       <header class="topstrip">
-        <div class="titles">
-          <h1 class="page-title">{{ currentLabel }}</h1>
-          <p class="page-sub">{{ today }}</p>
+        <div class="lead">
+          <!-- Lives here rather than in the rail: it is the control that acts ON the
+               rail, so it stays put whether the rail is open or shut instead of
+               shifting with the thing it toggles. The icon does not flip direction —
+               the rail's own state already shows that, and aria-pressed carries it
+               for anyone who cannot see it. -->
+          <button
+            type="button"
+            class="collapse"
+            :aria-label="collapsed ? 'Expand navigation' : 'Collapse navigation'"
+            :aria-pressed="collapsed"
+            :title="collapsed ? 'Expand navigation' : 'Collapse navigation'"
+            @click="toggleRail"
+          >
+            <SidebarIcon class="chev" aria-hidden="true" />
+          </button>
+
+          <div class="titles">
+            <h1 class="page-title">{{ currentLabel }}</h1>
+            <p class="page-sub">{{ today }}</p>
+          </div>
         </div>
 
         <!-- Placement reserved for the live queue count. Deliberately shows no
@@ -317,7 +325,6 @@ async function onSwitchMode(next: 'shop' | 'chair') {
   min-width: 0;
 }
 
-.collapse,
 .account {
   display: flex;
   align-items: center;
@@ -333,19 +340,16 @@ async function onSwitchMode(next: 'shop' | 'chair') {
   min-width: 0;
 }
 
-.collapse:hover,
 .account:hover {
   color: var(--fc-ink);
   background: rgba(255, 255, 255, 0.03);
 }
 
-.collapse:focus-visible,
 .account:focus-visible {
   outline: 2px solid var(--fc-accent);
   outline-offset: -2px;
 }
 
-.shell.is-collapsed .collapse,
 .shell.is-collapsed .account {
   justify-content: center;
   padding-inline: 0;
@@ -401,6 +405,42 @@ async function onSwitchMode(next: 'shop' | 'chair') {
   gap: 1rem;
   padding: 0.875rem clamp(1rem, 3vw, 1.75rem);
   border-bottom: 1px solid var(--fc-line);
+}
+
+.lead {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  min-width: 0;
+}
+
+.collapse {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 2rem;
+  height: 2rem;
+  background: none;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  color: var(--fc-ink-faint);
+  cursor: pointer;
+  transition: color 120ms ease, background-color 120ms ease;
+}
+
+.collapse:hover {
+  color: var(--fc-ink);
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.collapse:focus-visible {
+  outline: 2px solid var(--fc-accent);
+  outline-offset: 1px;
+}
+
+/* Pressed = the rail is shut. Reads as "this is doing something right now". */
+.collapse[aria-pressed='true'] {
+  color: var(--fc-accent);
 }
 
 .titles {
@@ -502,6 +542,11 @@ async function onSwitchMode(next: 'shop' | 'chair') {
 
   /* Replaced by the drawer rather than squeezed into a horizontal scroller. */
   .rail {
+    display: none;
+  }
+
+  /* Nothing to collapse once the rail is gone — the drawer button replaces it. */
+  .collapse {
     display: none;
   }
 
