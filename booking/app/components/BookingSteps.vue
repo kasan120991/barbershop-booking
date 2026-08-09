@@ -100,6 +100,9 @@ const items = computed(() =>
   display: grid;
   place-items: center;
   cursor: pointer;
+  /* The rail is the one thing on screen through every step change, so it is the piece
+     that should move rather than cut. */
+  transition: background-color 180ms ease, border-color 180ms ease, color 180ms ease;
 }
 
 .marker:disabled {

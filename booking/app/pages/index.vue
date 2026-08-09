@@ -199,307 +199,377 @@ function back(): void {
       call.
     </Message>
 
-    <!-- 1 · Service ------------------------------------------------------- -->
-    <section v-if="booking.step.value === 1" class="step-body">
-      <header class="head">
-        <div>
-          <h1>Choose a service</h1>
-          <p class="sub">What are you having today?</p>
-        </div>
-      </header>
+    <!--
+      One step on screen at a time, sliding the way the user just went.
 
-      <div class="cards">
-        <button
-          v-for="service in booking.bookableServices.value"
-          :key="service.id"
-          type="button"
-          class="card service"
-          :class="{ on: booking.serviceId.value === service.id }"
-          @click="chooseService(service.id)"
-        >
-          <span class="card-main">
-            <span class="name">{{ service.name }}</span>
-            <span v-if="service.description" class="desc">{{ service.description }}</span>
-            <span class="meta fcb-num">
-              <ClockIcon class="tiny" aria-hidden="true" />
-              {{ service.durationMinutes }} min
-            </span>
-          </span>
-          <span class="price fcb-num">{{ formatCents(service.priceCents) }}</span>
-        </button>
-      </div>
+      `out-in` rather than a crossfade: the steps are different heights, and two of them
+      in the layout at once makes the whole column jump. The wrapper carries a
+      min-height so the shorter steps do not collapse the page between the two halves.
 
-      <p v-if="booking.bookableServices.value.length === 0" class="empty">
-        Nothing is bookable online at the moment. Give the shop a call and we will sort you out.
-      </p>
-    </section>
+      Motion is switched off entirely under `prefers-reduced-motion` by the global rule
+      in main.css — this is decoration, and decoration is the first thing to drop.
+    -->
+    <div class="stage">
+      <Transition :name="booking.direction.value === 'back' ? 'step-back' : 'step-next'" mode="out-in">
+        <!-- 1 · Service ------------------------------------------------------- -->
+        <section v-if="booking.step.value === 1" key="1" class="step-body">
+          <header class="head">
+            <div>
+              <h1>Choose a service</h1>
+              <p class="sub">What are you having today?</p>
+            </div>
+          </header>
 
-    <!-- 2 · Barber -------------------------------------------------------- -->
-    <section v-else-if="booking.step.value === 2" class="step-body">
-      <header class="head">
-        <button type="button" class="back" aria-label="Back" @click="back">
-          <AngleLeft class="chev" aria-hidden="true" />
-        </button>
-        <div>
-          <h1>Choose your barber</h1>
-          <p class="sub">Who would you like to see?</p>
-        </div>
-      </header>
-
-      <div class="grid-2">
-        <button
-          type="button"
-          class="card person"
-          :class="{ on: booking.anyBarber.value }"
-          @click="chooseBarber(null)"
-        >
-          <span class="avatar any" aria-hidden="true"><Sparkles class="tiny" /></span>
-          <span class="who">
-            <span class="name">Any barber</span>
-            <span class="desc">The most times to choose from</span>
-          </span>
-        </button>
-
-        <button
-          v-for="barber in booking.eligibleBarbers.value"
-          :key="barber.id"
-          type="button"
-          class="card person"
-          :class="{ on: booking.barberId.value === barber.id }"
-          @click="chooseBarber(barber.id)"
-        >
-          <span class="avatar" aria-hidden="true">{{ barber.displayName.charAt(0) }}</span>
-          <span class="who">
-            <span class="name">{{ barber.displayName }}</span>
-            <span class="desc">{{ barber.bio ?? 'Barber' }}</span>
-          </span>
-        </button>
-      </div>
-    </section>
-
-    <!-- 3 · Date and time -------------------------------------------------- -->
-    <section v-else-if="booking.step.value === 3" class="step-body">
-      <header class="head">
-        <button type="button" class="back" aria-label="Back" @click="back">
-          <AngleLeft class="chev" aria-hidden="true" />
-        </button>
-        <div>
-          <h1>Pick a time</h1>
-          <!-- Worth saying out loud: these render in the SHOP's zone, so somebody
-               booking from an airport sees the time they will be standing here. -->
-          <p class="sub">Shop time — the clock on the wall when you walk in.</p>
-        </div>
-      </header>
-
-      <div class="week">
-        <button
-          type="button"
-          class="week-nav"
-          :disabled="weekOffset === 0"
-          aria-label="Previous week"
-          @click="weekOffset -= 1"
-        >
-          <AngleLeft class="chev" aria-hidden="true" />
-        </button>
-
-        <div class="days">
-          <button
-            v-for="day in days"
-            :key="day.iso"
-            type="button"
-            class="day"
-            :class="{ on: booking.date.value === day.iso }"
-            :disabled="day.beyondHorizon"
-            @click="chooseDay(day.iso)"
-          >
-            <span class="dow">{{ day.weekday }}</span>
-            <span class="dnum fcb-num">{{ day.dayNumber }}</span>
-          </button>
-        </div>
-
-        <button
-          type="button"
-          class="week-nav flip"
-          aria-label="Next week"
-          @click="weekOffset += 1"
-        >
-          <AngleLeft class="chev" aria-hidden="true" />
-        </button>
-      </div>
-
-      <div v-if="booking.slotsLoading.value" class="loading">
-        <ProgressSpinner style="width: 1.5rem; height: 1.5rem" :stroke-width="6" />
-        <span>Checking the book…</span>
-      </div>
-
-      <template v-else>
-        <div v-if="booking.slots.value.length" class="slots">
-          <button
-            v-for="slot in booking.slots.value"
-            :key="slot.startAt"
-            type="button"
-            class="slot fcb-num"
-            :class="{ on: booking.slot.value?.startAt === slot.startAt }"
-            @click="chooseSlot(slot)"
-          >
-            {{ slotTime(slot.startAt) }}
-          </button>
-        </div>
-
-        <!-- The engine explains itself rather than shrugging: closed, booked out and
-             beyond the horizon all read differently. -->
-        <p v-else class="empty">{{ booking.emptyReason.value ?? 'Nothing free that day.' }}</p>
-      </template>
-
-      <div v-if="booking.slot.value" class="continue">
-        <p v-if="booking.anyBarber.value" class="with">
-          That one is with <strong>{{ slotBarberName(booking.slot.value) }}</strong>.
-        </p>
-        <Button label="Continue" @click="booking.goTo(4)" />
-      </div>
-    </section>
-
-    <!-- 4 · Details -------------------------------------------------------- -->
-    <section v-else-if="booking.step.value === 4" class="step-body">
-      <header class="head">
-        <button type="button" class="back" aria-label="Back" @click="back">
-          <AngleLeft class="chev" aria-hidden="true" />
-        </button>
-        <div>
-          <h1>Who is it for?</h1>
-          <p class="sub">Your number is how we know it is you when you arrive.</p>
-        </div>
-      </header>
-
-      <div class="form">
-        <div class="row">
-          <div class="field">
-            <label for="b-first" class="fcb-label">First name</label>
-            <InputText
-              id="b-first"
-              v-model="booking.details.value.firstName"
-              :invalid="Boolean(fieldErrors.firstName)"
-              autocomplete="given-name"
-              fluid
-            />
-            <p v-if="fieldErrors.firstName" class="err">{{ fieldErrors.firstName[0] }}</p>
+          <div class="cards">
+            <button
+              v-for="service in booking.bookableServices.value"
+              :key="service.id"
+              type="button"
+              class="card service"
+              :class="{ on: booking.serviceId.value === service.id }"
+              @click="chooseService(service.id)"
+            >
+              <span class="card-main">
+                <span class="name">{{ service.name }}</span>
+                <span v-if="service.description" class="desc">{{ service.description }}</span>
+                <span class="meta fcb-num">
+                  <ClockIcon class="tiny" aria-hidden="true" />
+                  {{ service.durationMinutes }} min
+                </span>
+              </span>
+              <span class="price fcb-num">{{ formatCents(service.priceCents) }}</span>
+            </button>
           </div>
-          <div class="field">
-            <label for="b-last" class="fcb-label">Last name</label>
-            <InputText
-              id="b-last"
-              v-model="booking.details.value.lastName"
-              autocomplete="family-name"
-              fluid
-            />
-            <p class="hint">Optional. Only your initial is ever shown in the shop.</p>
-          </div>
-        </div>
 
-        <div class="field">
-          <label for="b-phone" class="fcb-label">Mobile number</label>
-          <InputText
-            id="b-phone"
-            v-model="booking.details.value.phone"
-            type="tel"
-            inputmode="tel"
-            autocomplete="tel"
-            placeholder="(415) 555-0123"
-            :invalid="Boolean(fieldErrors.phone)"
-            fluid
-          />
-          <p v-if="fieldErrors.phone" class="err">{{ fieldErrors.phone[0] }}</p>
-          <p v-else class="hint">
-            We do not text you — it is how the shop finds your booking at the door.
+          <p v-if="booking.bookableServices.value.length === 0" class="empty">
+            Nothing is bookable online at the moment. Give the shop a call and we will sort you out.
           </p>
-        </div>
-      </div>
+        </section>
 
-      <div class="continue">
-        <Button label="Continue" :disabled="!detailsValid" @click="booking.goTo(5)" />
-      </div>
-    </section>
+        <!-- 2 · Barber -------------------------------------------------------- -->
+        <section v-else-if="booking.step.value === 2" key="2" class="step-body">
+          <header class="head">
+            <button type="button" class="back" aria-label="Back" @click="back">
+              <AngleLeft class="chev" aria-hidden="true" />
+            </button>
+            <div>
+              <h1>Choose your barber</h1>
+              <p class="sub">Who would you like to see?</p>
+            </div>
+          </header>
 
-    <!-- 5 · Confirm --------------------------------------------------------- -->
-    <section v-else class="step-body">
-      <header class="head">
-        <button type="button" class="back" aria-label="Back" @click="back">
-          <AngleLeft class="chev" aria-hidden="true" />
-        </button>
-        <div>
-          <h1>Does this look right?</h1>
-          <p class="sub">Nothing is charged now. You pay in the shop after your cut.</p>
-        </div>
-      </header>
+          <div class="grid-2">
+            <button
+              type="button"
+              class="card person"
+              :class="{ on: booking.anyBarber.value }"
+              @click="chooseBarber(null)"
+            >
+              <span class="avatar any" aria-hidden="true"><Sparkles class="tiny" /></span>
+              <span class="who">
+                <span class="name">Any barber</span>
+                <span class="desc">The most times to choose from</span>
+              </span>
+            </button>
 
-      <div class="review">
-        <div class="review-row">
-          <span class="k">Service</span>
-          <span class="v">{{ booking.service.value?.name }}</span>
-        </div>
-        <div class="review-row">
-          <span class="k">Barber</span>
-          <span class="v">{{ booking.resolvedBarber.value?.displayName }}</span>
-        </div>
-        <div class="review-row">
-          <span class="k">When</span>
-          <span class="v fcb-num">
-            {{
-              booking.slot.value
-                ? new Intl.DateTimeFormat('en-US', {
-                    weekday: 'long',
-                    month: 'long',
-                    day: 'numeric',
-                    hour: 'numeric',
-                    minute: '2-digit',
-                    timeZone: booking.timezone.value,
-                  }).format(new Date(booking.slot.value.startAt))
-                : ''
-            }}
-          </span>
-        </div>
-        <div class="review-row">
-          <span class="k">Name</span>
-          <span class="v">
-            {{ booking.details.value.firstName }} {{ booking.details.value.lastName }}
-          </span>
-        </div>
-        <div class="review-row">
-          <span class="k">Mobile</span>
-          <span class="v fcb-num">{{ booking.details.value.phone }}</span>
-        </div>
-        <div class="review-row total">
-          <span class="k">Total, paid in the shop</span>
-          <span class="v fcb-num">{{ formatCents(booking.totalCents.value) }}</span>
-        </div>
-      </div>
+            <button
+              v-for="barber in booking.eligibleBarbers.value"
+              :key="barber.id"
+              type="button"
+              class="card person"
+              :class="{ on: booking.barberId.value === barber.id }"
+              @click="chooseBarber(barber.id)"
+            >
+              <span class="avatar" aria-hidden="true">{{ barber.displayName.charAt(0) }}</span>
+              <span class="who">
+                <span class="name">{{ barber.displayName }}</span>
+                <span class="desc">{{ barber.bio ?? 'Barber' }}</span>
+              </span>
+            </button>
+          </div>
+        </section>
 
-      <div class="continue">
-        <Button
-          label="Book It"
-          size="large"
-          :loading="submitting"
-          :disabled="!bookingOpen"
-          @click="confirm"
-        />
-      </div>
-    </section>
+        <!-- 3 · Date and time -------------------------------------------------- -->
+        <section v-else-if="booking.step.value === 3" key="3" class="step-body">
+          <header class="head">
+            <button type="button" class="back" aria-label="Back" @click="back">
+              <AngleLeft class="chev" aria-hidden="true" />
+            </button>
+            <div>
+              <h1>Pick a time</h1>
+              <!-- Worth saying out loud: these render in the SHOP's zone, so somebody
+                   booking from an airport sees the time they will be standing here. -->
+              <p class="sub">Shop time — the clock on the wall when you walk in.</p>
+            </div>
+          </header>
+
+          <div class="week">
+            <button
+              type="button"
+              class="week-nav"
+              :disabled="weekOffset === 0"
+              aria-label="Previous week"
+              @click="weekOffset -= 1"
+            >
+              <AngleLeft class="chev" aria-hidden="true" />
+            </button>
+
+            <div class="days">
+              <button
+                v-for="day in days"
+                :key="day.iso"
+                type="button"
+                class="day"
+                :class="{ on: booking.date.value === day.iso }"
+                :disabled="day.beyondHorizon"
+                @click="chooseDay(day.iso)"
+              >
+                <span class="dow">{{ day.weekday }}</span>
+                <span class="dnum fcb-num">{{ day.dayNumber }}</span>
+              </button>
+            </div>
+
+            <button
+              type="button"
+              class="week-nav flip"
+              aria-label="Next week"
+              @click="weekOffset += 1"
+            >
+              <AngleLeft class="chev" aria-hidden="true" />
+            </button>
+          </div>
+
+          <div v-if="booking.slotsLoading.value" class="loading">
+            <ProgressSpinner style="width: 1.5rem; height: 1.5rem" :stroke-width="6" />
+            <span>Checking the book…</span>
+          </div>
+
+          <template v-else>
+            <div v-if="booking.slots.value.length" class="slots">
+              <button
+                v-for="slot in booking.slots.value"
+                :key="slot.startAt"
+                type="button"
+                class="slot fcb-num"
+                :class="{ on: booking.slot.value?.startAt === slot.startAt }"
+                @click="chooseSlot(slot)"
+              >
+                {{ slotTime(slot.startAt) }}
+              </button>
+            </div>
+
+            <!-- The engine explains itself rather than shrugging: closed, booked out and
+                 beyond the horizon all read differently. -->
+            <p v-else class="empty">{{ booking.emptyReason.value ?? 'Nothing free that day.' }}</p>
+          </template>
+
+          <div v-if="booking.slot.value" class="continue">
+            <p v-if="booking.anyBarber.value" class="with">
+              That one is with <strong>{{ slotBarberName(booking.slot.value) }}</strong>.
+            </p>
+            <Button label="Continue" @click="booking.goTo(4)" />
+          </div>
+        </section>
+
+        <!-- 4 · Details -------------------------------------------------------- -->
+        <section v-else-if="booking.step.value === 4" key="4" class="step-body">
+          <header class="head">
+            <button type="button" class="back" aria-label="Back" @click="back">
+              <AngleLeft class="chev" aria-hidden="true" />
+            </button>
+            <div>
+              <h1>Who is it for?</h1>
+              <p class="sub">Your number is how we know it is you when you arrive.</p>
+            </div>
+          </header>
+
+          <div class="form">
+            <div class="row">
+              <div class="field">
+                <label for="b-first" class="fcb-label">First name</label>
+                <InputText
+                  id="b-first"
+                  v-model="booking.details.value.firstName"
+                  :invalid="Boolean(fieldErrors.firstName)"
+                  autocomplete="given-name"
+                  fluid
+                />
+                <p v-if="fieldErrors.firstName" class="err">{{ fieldErrors.firstName[0] }}</p>
+              </div>
+              <div class="field">
+                <label for="b-last" class="fcb-label">Last name</label>
+                <InputText
+                  id="b-last"
+                  v-model="booking.details.value.lastName"
+                  autocomplete="family-name"
+                  fluid
+                />
+                <p class="hint">Optional. Only your initial is ever shown in the shop.</p>
+              </div>
+            </div>
+
+            <div class="field">
+              <label for="b-phone" class="fcb-label">Mobile number</label>
+              <InputText
+                id="b-phone"
+                v-model="booking.details.value.phone"
+                type="tel"
+                inputmode="tel"
+                autocomplete="tel"
+                placeholder="(415) 555-0123"
+                :invalid="Boolean(fieldErrors.phone)"
+                fluid
+              />
+              <p v-if="fieldErrors.phone" class="err">{{ fieldErrors.phone[0] }}</p>
+              <p v-else class="hint">
+                We do not text you — it is how the shop finds your booking at the door.
+              </p>
+            </div>
+          </div>
+
+          <div class="continue">
+            <Button label="Continue" :disabled="!detailsValid" @click="booking.goTo(5)" />
+          </div>
+        </section>
+
+        <!-- 5 · Confirm --------------------------------------------------------- -->
+        <section v-else key="5" class="step-body">
+          <header class="head">
+            <button type="button" class="back" aria-label="Back" @click="back">
+              <AngleLeft class="chev" aria-hidden="true" />
+            </button>
+            <div>
+              <h1>Does this look right?</h1>
+              <p class="sub">Nothing is charged now. You pay in the shop after your cut.</p>
+            </div>
+          </header>
+
+          <div class="review">
+            <div class="review-row">
+              <span class="k">Service</span>
+              <span class="v">{{ booking.service.value?.name }}</span>
+            </div>
+            <div class="review-row">
+              <span class="k">Barber</span>
+              <span class="v">{{ booking.resolvedBarber.value?.displayName }}</span>
+            </div>
+            <div class="review-row">
+              <span class="k">When</span>
+              <span class="v fcb-num">
+                {{
+                  booking.slot.value
+                    ? new Intl.DateTimeFormat('en-US', {
+                        weekday: 'long',
+                        month: 'long',
+                        day: 'numeric',
+                        hour: 'numeric',
+                        minute: '2-digit',
+                        timeZone: booking.timezone.value,
+                      }).format(new Date(booking.slot.value.startAt))
+                    : ''
+                }}
+              </span>
+            </div>
+            <div class="review-row">
+              <span class="k">Name</span>
+              <span class="v">
+                {{ booking.details.value.firstName }} {{ booking.details.value.lastName }}
+              </span>
+            </div>
+            <div class="review-row">
+              <span class="k">Mobile</span>
+              <span class="v fcb-num">{{ booking.details.value.phone }}</span>
+            </div>
+            <div class="review-row total">
+              <span class="k">Total, paid in the shop</span>
+              <span class="v fcb-num">{{ formatCents(booking.totalCents.value) }}</span>
+            </div>
+          </div>
+
+          <div class="continue">
+            <Button
+              label="Book It"
+              size="large"
+              :loading="submitting"
+              :disabled="!bookingOpen"
+              @click="confirm"
+            />
+          </div>
+        </section>
+      </Transition>
+    </div>
   </div>
 </template>
 
 <style scoped>
+/**
+ * Centred in the pane rather than pinned left.
+ *
+ * The rail already holds one edge of the layout, so a left-pinned column put all the
+ * empty space on one side and made the page look unfinished on a wide screen. The
+ * confirmation and cancel pages centre the same way — they share this shell, and a
+ * column that shifts between steps reads as the page reloading into something else.
+ */
 .flow {
   max-width: 44rem;
+  margin-inline: auto;
 }
 
 .closed {
   margin-bottom: 1.5rem;
 }
 
+/**
+ * Holds the column's height steady across a step change.
+ *
+ * With `out-in` the outgoing step is gone before the incoming one exists, so without a
+ * floor the page collapses for a frame and the whole layout — including anything the
+ * user was about to click — jumps upward and back.
+ */
+.stage {
+  min-height: 26rem;
+}
+
 .step-body {
   display: flex;
   flex-direction: column;
   gap: 1.25rem;
+}
+
+/**
+ * Direction-aware. Forward slides in from the right and leaves to the left; back does
+ * the reverse, so the motion matches the gesture instead of the page appearing to
+ * reload into something else.
+ *
+ * Short and small on purpose — 180ms and 14px. A booking form is a thing people are
+ * trying to get through, and animation that has to be waited for stops being polish.
+ * `prefers-reduced-motion` zeroes all of it via the global rule in main.css.
+ */
+.step-next-enter-active,
+.step-next-leave-active,
+.step-back-enter-active,
+.step-back-leave-active {
+  transition: opacity 180ms ease, transform 180ms ease;
+}
+
+.step-next-enter-from {
+  opacity: 0;
+  transform: translateX(14px);
+}
+
+.step-next-leave-to {
+  opacity: 0;
+  transform: translateX(-14px);
+}
+
+.step-back-enter-from {
+  opacity: 0;
+  transform: translateX(-14px);
+}
+
+.step-back-leave-to {
+  opacity: 0;
+  transform: translateX(14px);
 }
 
 /* --- Heading --------------------------------------------------------------- */
@@ -717,6 +787,7 @@ h1 {
   flex-direction: column;
   align-items: center;
   gap: 0.125rem;
+  transition: background-color 120ms ease, border-color 120ms ease, color 120ms ease;
 }
 
 .day:disabled {
@@ -762,6 +833,9 @@ h1 {
   padding: 0.6875rem 0.5rem;
   font-size: 0.9375rem;
   font-weight: 550;
+  /* Selection eases in rather than snapping — the one place a hard cut reads as a
+     glitch, because a grid of pills all change at once. */
+  transition: background-color 120ms ease, border-color 120ms ease, color 120ms ease;
 }
 
 .slot:hover {

@@ -139,6 +139,8 @@ async function cancel(): Promise<void> {
 <style scoped>
 .page {
   max-width: 34rem;
+  /* Centred, matching the flow — the column must not shift between steps. */
+  margin-inline: auto;
   display: flex;
   flex-direction: column;
   gap: 1.25rem;

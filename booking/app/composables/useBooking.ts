@@ -200,16 +200,27 @@ export function useBooking() {
     5: false,
   }));
 
+  /**
+   * Which way the last move went, so the transition can slide the right way.
+   *
+   * A stepper that animates the same direction both ways feels like the page is
+   * reloading rather than moving; matching the direction to the gesture is most of
+   * what makes "back" feel like back.
+   */
+  const direction = useState<'forward' | 'back'>('booking:direction', () => 'forward');
+
   function goTo(next: StepIndex): void {
     // Backwards is always allowed; forwards only into a step whose predecessors are
     // answered, so the rail can never strand somebody on a screen with no context.
     if (next <= step.value) {
+      direction.value = next < step.value ? 'back' : 'forward';
       step.value = next;
       return;
     }
     for (let i = 1 as StepIndex; i < next; i = (i + 1) as StepIndex) {
       if (!completed.value[i]) return;
     }
+    direction.value = 'forward';
     step.value = next;
   }
 
@@ -233,6 +244,7 @@ export function useBooking() {
     timezone,
     // selection
     step,
+    direction,
     serviceId,
     barberId,
     anyBarber,
