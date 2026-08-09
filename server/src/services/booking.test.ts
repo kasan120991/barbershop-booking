@@ -107,6 +107,9 @@ function bookingInput(overrides: Record<string, unknown> = {}) {
     client: { phone: CLIENT_PHONE, firstName: 'Race' },
     source: 'ONLINE' as const,
     enforceMinimumNotice: false,
+    // These predate the online switches and are about other rules; the shop's online
+    // flags have their own file.
+    enforceOnlineRules: false,
     now: NOW,
     ...overrides,
   };

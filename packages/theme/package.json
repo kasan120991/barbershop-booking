@@ -1,0 +1,21 @@
+{
+  "name": "@francis/theme",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Brand palette and the PrimeVue preset — shared by both Nuxt apps",
+  "exports": {
+    ".": "./src/index.ts",
+    "./brand": "./src/brand.ts",
+    "./preset": "./src/preset.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@primeuix/themes": "3.0.0"
+  },
+  "devDependencies": {
+    "typescript": "5.9.3"
+  }
+}

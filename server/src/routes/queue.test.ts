@@ -468,6 +468,7 @@ describe.skipIf(!reachable)('the queue and the calendar share one day', () => {
       client: { phone: CARLA, firstName: 'Carla' },
       source: 'ONLINE',
       enforceMinimumNotice: false,
+      enforceOnlineRules: false,
       now: new Date(NOW.getTime() - 60_000),
     });
 
@@ -488,6 +489,7 @@ describe.skipIf(!reachable)('the queue and the calendar share one day', () => {
       client: { phone: CARLA, firstName: 'Carla' },
       source: 'ONLINE',
       enforceMinimumNotice: false,
+      enforceOnlineRules: false,
       now: new Date(NOW.getTime() - 60_000),
     });
 

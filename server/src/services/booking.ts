@@ -59,6 +59,16 @@ export interface CreateAppointmentInput {
   createdByUserId?: string | null;
   /** Staff may book inside the notice window; the public may not. */
   enforceMinimumNotice: boolean;
+  /**
+   * Whether the shop's *online* switches apply — `onlineBookingEnabled`,
+   * `Service.bookableOnline`, `Barber.acceptsOnline`.
+   *
+   * A separate flag from `enforceMinimumNotice` because they answer different
+   * questions, and both are false for staff. Switching off online booking must not
+   * stop the person at the desk taking a booking over the counter; that is the whole
+   * point of a switch that says *online*.
+   */
+  enforceOnlineRules: boolean;
   now?: Date;
 }
 
@@ -71,9 +81,25 @@ export async function createAppointment(input: CreateAppointmentInput) {
   const settings = await prisma.shopSettings.findUnique({ where: { id: 1 } });
   if (!settings) throw new NotFoundError('Shop settings have not been set up.');
 
+  /**
+   * The shop-wide switch, checked before anything else — if online booking is off,
+   * nothing about this request can make it acceptable.
+   *
+   * These three flags have been in the schema and the admin UI since the beginning
+   * with nothing reading them, which was harmless only while no public client existed.
+   * The walk-in side has always enforced its equivalents (`walkInQueueEnabled`,
+   * `bookableWalkIn`); this brings the online path up to the same standard.
+   */
+  if (input.enforceOnlineRules && !settings.onlineBookingEnabled) {
+    throw new ValidationError('Online booking is closed right now. Please call the shop.');
+  }
+
   const barber = await prisma.barber.findUnique({ where: { id: input.barberId } });
   if (!barber) throw new NotFoundError('Barber not found.');
   if (barber.status !== 'ACTIVE') throw new ValidationError('That barber is not taking bookings.');
+  if (input.enforceOnlineRules && !barber.acceptsOnline) {
+    throw new ValidationError(`${barber.displayName} is not taking online bookings.`);
+  }
 
   if (input.serviceIds.length === 0) throw new ValidationError('Choose at least one service.');
 
@@ -83,6 +109,12 @@ export async function createAppointment(input: CreateAppointmentInput) {
   }
   const inactive = services.find((service) => !service.isActive);
   if (inactive) throw new ValidationError(`${inactive.name} is no longer offered.`);
+  // Separate from `isActive` on purpose: the shop can keep offering a two-hour colour
+  // at the desk while refusing to let a stranger book one unattended.
+  const notOnline = input.enforceOnlineRules
+    ? services.find((service) => !service.bookableOnline)
+    : undefined;
+  if (notOnline) throw new ValidationError(`${notOnline.name} has to be booked by phone.`);
 
   /**
    * Duration and price are computed HERE from the Service rows, never taken from the
@@ -202,6 +234,19 @@ export async function createAppointment(input: CreateAppointmentInput) {
 export function getAppointment(appointmentId: string) {
   return prisma.appointment.findUnique({
     where: { id: appointmentId },
+    include: { services: true, client: true, barber: true },
+  });
+}
+
+/**
+ * Looks an appointment up by its cancel token.
+ *
+ * The token is the credential — it is 25 characters of cuid, never guessable by walking
+ * ids, and it is handed out exactly once to the person who made the booking.
+ */
+export function getAppointmentByToken(token: string) {
+  return prisma.appointment.findUnique({
+    where: { cancelToken: token },
     include: { services: true, client: true, barber: true },
   });
 }

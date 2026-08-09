@@ -42,9 +42,10 @@ pnpm workspace monorepo. Node 22+, pnpm 11 (via corepack).
 
 ```
 packages/shared/   @francis/shared    the API contract — zod schemas, types, socket events, pure helpers
+packages/theme/    @francis/theme     the palette and the PrimeVue presets, dark and light
 server/            @francis/server    Express 5 + Prisma + MySQL + Socket.IO + Stripe
-app/               @francis/app       Nuxt 4 + PrimeVue — STAFF (admin + barber), authenticated
-booking/           @francis/booking   Nuxt 4 + PrimeVue — PUBLIC booking + /kiosk
+app/               @francis/app       Nuxt 4 + PrimeVue — STAFF (admin + barber), authenticated, :3000
+booking/           @francis/booking   Nuxt 4 + PrimeVue — PUBLIC booking + /kiosk, :3001
 ```
 
 ### Dependency rules — enforce these
@@ -112,6 +113,25 @@ For a barber + service set + date: start from `BarberSchedule` for that weekday,
 `ScheduleException`, intersect with `ShopHours` minus `ShopClosure`, subtract non-cancelled
 `Appointment` ranges, subtract time committed to the live queue, then emit slots at the configured
 granularity that fit the total requested duration.
+
+### The public booking site
+
+- **`enforceOnlineRules` is a separate flag from `enforceMinimumNotice`**, and both are false for
+  staff. `onlineBookingEnabled`, `Service.bookableOnline` and `Barber.acceptsOnline` govern the
+  *internet*, not the shop — switching online booking off must never stop the desk taking one
+  over the counter. Every test of these asserts both halves.
+- **`GET /services` and `GET /barbers` do NOT filter on those flags.** The kiosk reads the same
+  two endpoints and needs the walk-in-only rows, so the list stays complete, the client filters
+  for display, and the server refuses at write time. Display is a courtesy; the write check is
+  the boundary.
+- **"Any barber" is resolved in the client**, by asking every eligible barber for availability
+  and merging. The API has no unassigned appointment and should not: the double-booking lock is
+  per barber per day, and there is nothing to lock without one. Picking a time therefore picks a
+  person, and the confirmation names them.
+- **`GET /appointments/token/:token`** is the read half of the cancel link. Without it a
+  bookmarked cancel page could only ask "cancel your appointment?" with no idea which one. It
+  returns nothing the link holder did not type in themselves — no phone, no surname — because a
+  link gets forwarded.
 
 ### `services/booking.ts` — double-booking prevention
 MySQL cannot express "no overlapping ranges" as a unique constraint. Every booking write runs in a
@@ -290,8 +310,15 @@ Settled while building it:
 - Prefer PrimeVue components over hand-rolled UI. **Use the `primevue` MCP** to check component
   APIs rather than guessing — PrimeVue 5 differs from v3/v4 in props and theming. `validate_usage`
   confirms a prop still exists before you write the markup.
-- **Colour lives in exactly two files**: `app/app/theme/preset.ts` (PrimeVue tokens) and
-  `app/app/assets/css/main.css` (app tokens). Components reference custom properties, never hex.
+- **Colour literals live in exactly one place — `packages/theme/src/brand.ts`.** Each app then
+  owns its own surface tokens (`app/app/assets/css/main.css`, `booking/app/assets/css/main.css`)
+  and references custom properties, never hex. This moved out of `app/` when the second app
+  arrived: two copies of a palette is how one input class ended up with four different paddings.
+  `@primeuix/themes` belongs in `theme`, never in `shared`, which is a leaf that ships to every
+  client.
+- **Both apps pin their scheme and neither reads `prefers-color-scheme`.** The staff app pins
+  dark so a shop tablet cannot flip; the booking site pins light so a customer's OS setting
+  cannot restyle a page the shop designed. Same reasoning, opposite direction.
 - **Native `<input type="date">`/`type="time"` use the shared `.fc-input` class** — never a local
   copy. It derives padding, radius, font size and height from PrimeVue's own `--p-form-field-*`
   tokens, so a native input matches a `Select` by construction. This existed as four hand-tuned

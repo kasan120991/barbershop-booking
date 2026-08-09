@@ -1,0 +1,126 @@
+/**
+ * App-level tokens for the public site.
+ *
+ * Same brand as the staff app, turned over. The staff app is pinned dark because a shop
+ * tablet must not flip; this one is pinned light for the mirror reason — a customer's OS
+ * preference must not restyle a page the shop designed. Neither reads
+ * `prefers-color-scheme`, and that is deliberate in both.
+ *
+ * The palette itself lives in `@francis/theme`; these are the surface decisions made on
+ * top of it. The ground is bone rather than white and the ink is charcoal rather than
+ * black — the same warm bias that keeps the dark app from reading as generic dark mode
+ * keeps this from reading as a default form page.
+ */
+
+:root {
+  /* The light pane. */
+  --fcb-ground: #f6f4f0;
+  --fcb-surface: #ffffff;
+  --fcb-line: #e4e0d9;
+  --fcb-line-strong: #c9c4ba;
+
+  --fcb-ink: #1e1e23;
+  --fcb-ink-muted: #6f6a63;
+  --fcb-ink-faint: #a39d93;
+
+  /*
+   * Brass at full strength is a fill colour; as *text* on bone it fails contrast, so
+   * anything that has to be read uses the deeper 700.
+   */
+  --fcb-accent: #d4a24c;
+  --fcb-accent-strong: #a1762f;
+  --fcb-accent-ink: #1a1408;
+  --fcb-accent-wash: rgba(212, 162, 76, 0.1);
+  --fcb-accent-line: #c08f3f;
+
+  /* The summary rail — the staff app's ground, carried over so the two feel related. */
+  --fcb-rail: #17171b;
+  --fcb-rail-raised: #26262c;
+  --fcb-rail-line: #33333a;
+  --fcb-rail-ink: #f4f2ee;
+  --fcb-rail-muted: #a39d93;
+
+  /* Reserved for failure states only — never decorative. */
+  --fcb-danger: #b4463d;
+  --fcb-danger-bg: rgba(210, 100, 92, 0.1);
+  --fcb-danger-line: rgba(210, 100, 92, 0.45);
+
+  --fcb-font-display: ui-sans-serif, 'Helvetica Neue', Helvetica, Arial, sans-serif;
+  --fcb-font-body: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, Arial,
+    sans-serif;
+
+  --fcb-radius: 10px;
+
+  color-scheme: light;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#__nuxt {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--fcb-ground);
+  color: var(--fcb-ink);
+  font-family: var(--fcb-font-body);
+  font-size: 0.9375rem;
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* The wordmark and the barber-pole stripe, carried from the staff app unchanged. */
+.fcb-wordmark {
+  margin: 0;
+  font-family: var(--fcb-font-display);
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.2em;
+  font-size: 0.8125rem;
+}
+
+.fcb-pole {
+  width: 0.5rem;
+  height: 1.5rem;
+  border-radius: 1px;
+  flex: none;
+  background: repeating-linear-gradient(
+    -45deg,
+    var(--fcb-accent) 0 3px,
+    var(--fcb-rail) 3px 6px
+  );
+}
+
+/* Uppercase micro-label, the light counterpart of the staff app's `.fc-label`. */
+.fcb-label {
+  display: block;
+  font-size: 0.6875rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--fcb-ink-muted);
+  font-weight: 600;
+}
+
+.fcb-num {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Every focusable thing gets the same ring, including the custom option buttons. */
+:where(button, a, input, [tabindex]):focus-visible {
+  outline: 2px solid var(--fcb-accent-strong);
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+  }
+}

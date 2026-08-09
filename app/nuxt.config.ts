@@ -8,10 +8,10 @@ export default defineNuxtConfig({
 
   css: ['~/assets/css/main.css'],
 
-  // @francis/shared exports TypeScript source rather than a build artifact, so Vite
-  // has to transpile it instead of treating it as a prebuilt dependency.
+  // Both workspace packages export TypeScript source rather than a build artifact, so
+  // Vite has to transpile them instead of treating them as prebuilt dependencies.
   build: {
-    transpile: ['@francis/shared'],
+    transpile: ['@francis/shared', '@francis/theme'],
   },
 
   runtimeConfig: {

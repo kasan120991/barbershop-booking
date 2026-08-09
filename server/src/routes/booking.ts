@@ -22,7 +22,7 @@ import rateLimit, { ipKeyGenerator } from 'express-rate-limit';
 
 import { isTest } from '../config/env.js';
 import type { AppointmentStatus, Role } from '../generated/prisma/enums.js';
-import { ValidationError } from '../lib/errors.js';
+import { NotFoundError, ValidationError } from '../lib/errors.js';
 import { pathParam } from '../lib/http.js';
 import { prisma } from '../lib/prisma.js';
 import { toAppointmentDto, toBookingConfirmationDto } from '../mappers/appointment.js';
@@ -34,6 +34,7 @@ import {
   cancelAppointmentByToken,
   createAppointment,
   getAppointment,
+  getAppointmentByToken,
   listAppointments,
   updateAppointmentStatus,
 } from '../services/booking.js';
@@ -131,6 +132,9 @@ bookingRouter.post('/appointments', bookingIpLimit, bookingPhoneLimit, async (re
     createdByUserId: isStaff && req.auth?.kind === 'user' ? req.auth.userId : null,
     // Staff can fit someone in at short notice; the public cannot.
     enforceMinimumNotice: !isStaff,
+    // And the shop's online switches govern the public only — turning online booking
+    // off must not stop the desk taking one over the counter.
+    enforceOnlineRules: !isStaff,
   });
 
   await recordAudit(auditContext(req), {
@@ -217,6 +221,23 @@ bookingRouter.patch('/appointments/:appointmentId/status', requireUser, async (r
 });
 
 // --- Public cancellation -----------------------------------------------------
+
+/**
+ * The read half of the cancel link.
+ *
+ * Without it a bookmarked cancel page could only ask "cancel your appointment?" with
+ * no idea which one — the token was write-only, and there was no way to look up what it
+ * referred to. Same bearer-token model as the cancel below, same opaque 404, and it
+ * returns exactly what the booking confirmation returned: no client name, no phone, no
+ * notes, nothing the holder of the link did not already type in themselves.
+ */
+bookingRouter.get('/appointments/token/:token', async (req, res) => {
+  const appointment = await getAppointmentByToken(pathParam(req, 'token'));
+  if (!appointment) throw new NotFoundError('That link is not valid.');
+
+  const body: BookingConfirmationDto = toBookingConfirmationDto(appointment);
+  res.json({ booking: body, status: appointment.status });
+});
 
 /**
  * By opaque token, never by id.

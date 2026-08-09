@@ -1,11 +1,11 @@
 {
-  "name": "@francis/app",
+  "name": "@francis/booking",
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "Francis Cutz staff app \u2014 admin and barber, authenticated",
+  "description": "Francis Cutz public booking site, and the in-shop /kiosk",
   "scripts": {
-    "dev": "nuxt dev --port 3000",
+    "dev": "nuxt dev --port 3001",
     "build": "nuxt build",
     "preview": "nuxt preview",
     "postinstall": "nuxt prepare",
@@ -14,13 +14,10 @@
   "dependencies": {
     "@francis/shared": "workspace:*",
     "@francis/theme": "workspace:*",
-    "@pinia/nuxt": "1.0.1",
     "@primeicons/vue": "8.0.0",
     "@primeuix/themes": "3.0.0",
     "nuxt": "4.5.2",
-    "pinia": "4.0.2",
     "primevue": "5.0.0",
-    "socket.io-client": "^4.8.3",
     "vue": "3.5.41"
   },
   "devDependencies": {
