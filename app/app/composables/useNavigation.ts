@@ -18,6 +18,7 @@ import Clock from '@primeicons/vue/clock';
 import CreditCard from '@primeicons/vue/credit-card';
 import Dollar from '@primeicons/vue/dollar';
 import Home from '@primeicons/vue/home';
+import Tablet from '@primeicons/vue/tablet';
 import Users from '@primeicons/vue/users';
 import Wallet from '@primeicons/vue/wallet';
 import type { Component } from 'vue';
@@ -37,6 +38,7 @@ const SHOP_NAV: NavItem[] = [
   { label: 'Clients', to: '/clients', icon: AddressBook, adminOnly: true },
   { label: 'Services & Hours', to: '/services', icon: Clock, adminOnly: true },
   { label: 'Barbers & Rent', to: '/barbers', icon: Wallet, adminOnly: true },
+  { label: 'Screens', to: '/devices', icon: Tablet, adminOnly: true },
   { label: 'Reports', to: '/reports', icon: ChartBar, adminOnly: true },
 ];
 

@@ -252,6 +252,18 @@ Settled while building it:
   `x-device-token`. The token never expires — an admin revokes it, which clears the token outright.
   Narrow scope — join queue, read the board. It cannot read client history, list phone numbers, or
   take payment. Device requests are CSRF-exempt: a header credential cannot be forged cross-site.
+- **`KIOSK` and `DISPLAY` are a permission, not a label.** Only a kiosk may `POST /queue`; the wall
+  display is read-only and is refused. Both read the same redacted board.
+- **The kiosk client must never send credentials** — no `withCredentials` on its socket, no
+  `credentials: 'include'` on its fetches. A session cookie beats a device token on *both*
+  transports (deliberately: a signed-in barber on the shop tablet is themselves), and cookies
+  ignore ports, so a browser used for both apps on one host would otherwise put the kiosk in the
+  `shop` room and put full phone numbers on a screen facing the room. Nothing on the server can
+  tell the two cases apart; `realtime.test.ts` pins the precedence so the client rule stays
+  load-bearing rather than folklore.
+- **A 401 on the kiosk means revoked, not expired.** It clears the stored token and returns to the
+  pairing screen — the opposite of the staff app, where a 401 means sign in again. There is nobody
+  at a kiosk to sign in.
 - **Lockout:** 10 failed logins locks the account until an admin unlocks it, and locking revokes
   existing sessions. Login also sits behind an IP throttle. Failed logins must return an identical
   response for a wrong password and an unknown email, and must burn equivalent CPU (see
@@ -269,6 +281,10 @@ Settled while building it:
 ## Conventions
 
 - TypeScript everywhere, `strict` on, all packages extend `tsconfig.base.json`.
+- **Rate limiters go through `lib/rate-limit.ts`**, never `rateLimit()` directly. Its default 429
+  body bypasses `errorHandler`, so the envelope both frontends parse is missing and `toApiFailure`
+  reports it as `NETWORK` — a refused client saying "could not reach the shop" about a server that
+  answered it.
 - Validate every request body, query, and param with a zod schema from `shared`. Parse inline with
   `schema.parse(req.body)` — a thrown `ZodError` is already converted to the shared 400 envelope by
   `errorHandler`, and Express 5 forwards async rejections there. That keeps the parsed value typed

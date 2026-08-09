@@ -232,13 +232,13 @@ async function session(email: string) {
 }
 
 /** Pairs a kiosk and returns its bearer token. */
-async function kioskToken(): Promise<string> {
+async function deviceToken(type: 'KIOSK' | 'DISPLAY' = 'KIOSK'): Promise<string> {
   const admin = await session(ADMIN_EMAIL);
   const created = await request(server)
     .post('/api/devices')
     .set('Cookie', admin.cookies)
     .set(CSRF_HEADER, admin.csrfToken)
-    .send({ label: `${PREFIX}Front counter`, type: 'KIOSK' })
+    .send({ label: `${PREFIX}${type === 'KIOSK' ? 'Front counter' : 'Wall board'}`, type })
     .expect(201);
 
   const paired = await request(server)
@@ -248,6 +248,8 @@ async function kioskToken(): Promise<string> {
 
   return paired.body.deviceToken as string;
 }
+
+const kioskToken = () => deviceToken('KIOSK');
 
 afterAll(async () => {
   if (reachable) {
@@ -727,6 +729,42 @@ describe.skipIf(!reachable)('who may see what', () => {
     expect(board.body.board.entries[0].displayName).toBe('Alice A.');
     // And no price, no notes, no service list.
     expect(board.body.board.entries[0].priceCentsTotal).toBeUndefined();
+  });
+
+  /**
+   * The wall display is read-only by definition — mounted out of reach, with nobody
+   * standing at it. Without this the two device types differ by a label rather than a
+   * permission, and a screen on a wall can add people to the line.
+   */
+  it('refuses a wall display trying to add somebody to the queue', async () => {
+    const display = await deviceToken('DISPLAY');
+
+    const response = await request(server)
+      .post('/api/queue')
+      .set(DEVICE_TOKEN_HEADER, display)
+      .send({ phone: ALICE, firstName: 'Alice', serviceIds: [cutId] });
+
+    expect(response.status).toBe(403);
+    expect(response.body.error.message).toMatch(/cannot add people/i);
+  });
+
+  it('still lets a kiosk add somebody, which is the whole point of one', async () => {
+    const kiosk = await deviceToken('KIOSK');
+
+    await request(server)
+      .post('/api/queue')
+      .set(DEVICE_TOKEN_HEADER, kiosk)
+      .send({ phone: ALICE, firstName: 'Alice', serviceIds: [cutId] })
+      .expect(201);
+  });
+
+  it('still lets a wall display READ the board — that is what it is for', async () => {
+    const display = await deviceToken('DISPLAY');
+
+    await request(server)
+      .get('/api/queue/board')
+      .set(DEVICE_TOKEN_HEADER, display)
+      .expect(200);
   });
 
   it('does not hand a kiosk the staff board as a side effect of joining', async () => {

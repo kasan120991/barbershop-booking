@@ -18,11 +18,11 @@ import {
   type BookingConfirmationDto,
 } from '@francis/shared';
 import { Router } from 'express';
-import rateLimit, { ipKeyGenerator } from 'express-rate-limit';
+import { ipKeyGenerator } from 'express-rate-limit';
 
-import { isTest } from '../config/env.js';
 import type { AppointmentStatus, Role } from '../generated/prisma/enums.js';
 import { NotFoundError, ValidationError } from '../lib/errors.js';
+import { limiter } from '../lib/rate-limit.js';
 import { pathParam } from '../lib/http.js';
 import { prisma } from '../lib/prisma.js';
 import { toAppointmentDto, toBookingConfirmationDto } from '../mappers/appointment.js';
@@ -44,24 +44,20 @@ export const bookingRouter: Router = Router();
 const adminOnly = requireRole(ROLE.ADMIN as Role);
 
 /** Per-IP: stops one host hammering the booking form. */
-const bookingIpLimit = rateLimit({
+const bookingIpLimit = limiter({
   windowMs: 60 * 60 * 1000,
   limit: 10,
-  standardHeaders: 'draft-7',
-  legacyHeaders: false,
-  skip: () => isTest,
+  message: 'Too many bookings from here just now. Please try again later, or call the shop.',
 });
 
 /**
  * Per-phone: stops a distributed attempt to fill one barber's day, which an IP limit
  * cannot see. Keyed on the normalised number so formatting variations are one key.
  */
-const bookingPhoneLimit = rateLimit({
+const bookingPhoneLimit = limiter({
   windowMs: 60 * 60 * 1000,
   limit: 5,
-  standardHeaders: 'draft-7',
-  legacyHeaders: false,
-  skip: () => isTest,
+  message: 'That number has made several bookings already. Please call the shop.',
   keyGenerator: (req) => {
     const body = req.body as { phone?: unknown };
     const phone = typeof body?.phone === 'string' ? normalizePhone(body.phone) : null;

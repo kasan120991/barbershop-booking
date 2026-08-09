@@ -16,12 +16,11 @@ import {
   ROLE,
 } from '@francis/shared';
 import { Router } from 'express';
-import rateLimit from 'express-rate-limit';
 
-import { isTest } from '../config/env.js';
 import type { DeviceType, Role } from '../generated/prisma/enums.js';
 import { UnauthenticatedError } from '../lib/errors.js';
 import { pathParam } from '../lib/http.js';
+import { limiter } from '../lib/rate-limit.js';
 import { toDeviceDto } from '../mappers/auth.js';
 import { requireRole } from '../middleware/require-auth.js';
 import {
@@ -34,12 +33,10 @@ import {
 export const deviceRouter: Router = Router();
 
 /** Brute-forcing an 8-digit code is the only real attack here; this makes it impractical. */
-const pairRateLimit = rateLimit({
+const pairRateLimit = limiter({
   windowMs: 15 * 60 * 1000,
   limit: 10,
-  standardHeaders: 'draft-7',
-  legacyHeaders: false,
-  skip: () => isTest,
+  message: 'Too many pairing attempts. Wait a few minutes, then ask for a fresh code.',
 });
 
 deviceRouter.post('/devices', requireRole(ROLE.ADMIN as Role), async (req, res) => {

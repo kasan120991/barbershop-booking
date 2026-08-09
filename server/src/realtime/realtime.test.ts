@@ -249,6 +249,46 @@ describe.skipIf(!reachable)('the handshake', () => {
     expect(ready.rooms).not.toContain('shop');
   });
 
+  /**
+   * The precedence that makes a client-side rule load-bearing.
+   *
+   * A session cookie beats a device token on both transports, deliberately — a
+   * signed-in barber using the shop tablet should be themselves. But cookies ignore
+   * ports, so a browser used for both apps on one host carries the staff session to the
+   * kiosk's own requests, and the socket would then join `shop` and receive full phone
+   * numbers on a screen facing the room.
+   *
+   * Nothing on the server can distinguish the two cases. What keeps the kiosk safe is
+   * that its client never sends credentials — no `withCredentials` on the socket, no
+   * `credentials: 'include'` on fetch. This test is why that is a rule rather than a
+   * preference.
+   */
+  it('puts a socket carrying BOTH a session cookie and a device token in shop', async () => {
+    const staff = await session(BARBER_EMAIL);
+    const token = await kioskToken();
+
+    const socket = track(
+      connect(url(), {
+        reconnection: false,
+        extraHeaders: { Cookie: staff.header },
+        auth: { deviceToken: token },
+      }),
+    );
+
+    const ready = await once<{ rooms: string[] }>(socket, 'connection:ready');
+
+    expect(ready.rooms).toContain('shop');
+    expect(ready.rooms).not.toContain('kiosk');
+  });
+
+  it('puts the same device in kiosk once the cookie is not sent', async () => {
+    const token = await kioskToken();
+    const socket = track(connect(url(), { reconnection: false, auth: { deviceToken: token } }));
+
+    const ready = await once<{ rooms: string[] }>(socket, 'connection:ready');
+    expect(ready.rooms).toEqual(['kiosk']);
+  });
+
   it('refuses a device token that has been revoked', async () => {
     const token = await kioskToken();
     await prisma.device.updateMany({

@@ -23,11 +23,11 @@ import {
   type QueueBoardDto,
 } from '@francis/shared';
 import { Router, type Response } from 'express';
-import rateLimit, { ipKeyGenerator } from 'express-rate-limit';
+import { ipKeyGenerator } from 'express-rate-limit';
 
-import { isTest } from '../config/env.js';
 import type { QueueStatus } from '../generated/prisma/enums.js';
-import { UnauthenticatedError } from '../lib/errors.js';
+import { ForbiddenError, UnauthenticatedError } from '../lib/errors.js';
+import { limiter } from '../lib/rate-limit.js';
 import { pathParam } from '../lib/http.js';
 import { toPublicQueueBoardDto, toQueueBoardDto } from '../mappers/queue.js';
 import { requireDevice, requireUser } from '../middleware/require-auth.js';
@@ -51,20 +51,16 @@ export const queueRouter: Router = Router();
  * reason, and the per-phone limit is the one doing the real work: it stops one person
  * refilling the line, which an IP limit cannot see behind a single kiosk.
  */
-const joinIpLimit = rateLimit({
+const joinIpLimit = limiter({
   windowMs: 60 * 60 * 1000,
   limit: 60,
-  standardHeaders: 'draft-7',
-  legacyHeaders: false,
-  skip: () => isTest,
+  message: 'The shop has taken a lot of walk-ins just now. Please ask at the desk.',
 });
 
-const joinPhoneLimit = rateLimit({
+const joinPhoneLimit = limiter({
   windowMs: 60 * 60 * 1000,
   limit: 5,
-  standardHeaders: 'draft-7',
-  legacyHeaders: false,
-  skip: () => isTest,
+  message: 'That number has joined the queue several times already today.',
   keyGenerator: (req) => {
     const body = req.body as { phone?: unknown };
     const phone = typeof body?.phone === 'string' ? normalizePhone(body.phone) : null;
@@ -97,6 +93,19 @@ queueRouter.get('/queue/board', requireDevice(), async (_req, res) => {
  */
 queueRouter.post('/queue', joinIpLimit, joinPhoneLimit, async (req, res) => {
   if (!req.auth) throw new UnauthenticatedError('You must be signed in to do that.');
+
+  /**
+   * A device may join somebody ONLY if it is a kiosk.
+   *
+   * `DISPLAY` is the wall board — read-only by definition, mounted out of reach, and
+   * with nobody standing at it. Letting one write would mean the difference between the
+   * two device types was a label rather than a permission. The check lives here rather
+   * than as `requireDevice('KIOSK')` middleware because this route also serves staff,
+   * who are not devices at all.
+   */
+  if (req.auth.kind === 'device' && req.auth.deviceType !== 'KIOSK') {
+    throw new ForbiddenError('This screen cannot add people to the queue.');
+  }
 
   const input = joinQueueRequestSchema.parse(req.body);
   const isStaff = req.auth.kind === 'user';

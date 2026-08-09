@@ -18,12 +18,12 @@ import {
   type SessionUserDto,
 } from '@francis/shared';
 import { Router } from 'express';
-import rateLimit from 'express-rate-limit';
 
-import { env, isTest } from '../config/env.js';
+import { env } from '../config/env.js';
 import { clearSessionCookies, setSessionCookies } from '../lib/cookies.js';
 import { NotFoundError, UnauthenticatedError } from '../lib/errors.js';
 import { prisma } from '../lib/prisma.js';
+import { limiter } from '../lib/rate-limit.js';
 import { toSessionUserDto } from '../mappers/auth.js';
 import { requireUser } from '../middleware/require-auth.js';
 import { changePassword, login } from '../services/auth.js';
@@ -39,12 +39,10 @@ export const authRouter: Router = Router();
  * Disabled under NODE_ENV=test, because the lockout tests need more attempts than
  * the limit allows.
  */
-const loginRateLimit = rateLimit({
+const loginRateLimit = limiter({
   windowMs: env.LOGIN_RATE_LIMIT_WINDOW_MINUTES * 60 * 1000,
   limit: env.LOGIN_RATE_LIMIT_MAX,
-  standardHeaders: 'draft-7',
-  legacyHeaders: false,
-  skip: () => isTest,
+  message: 'Too many sign-in attempts. Please wait a few minutes and try again.',
 });
 
 async function loadSessionUser(userId: string): Promise<SessionUserDto> {
