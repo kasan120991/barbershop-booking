@@ -99,33 +99,31 @@ async function onSwitchMode(next: 'shop' | 'chair') {
         <p v-if="!collapsed" class="fc-wordmark">Francis Cutz</p>
       </NuxtLink>
 
-      <div v-if="canSwitch" class="mode">
-        <div
-          class="mode-switch"
-          :class="{ stacked: collapsed }"
-          role="group"
-          aria-label="Switch between running the shop and your own chair"
+      <div
+        v-if="canSwitch"
+        class="mode-switch"
+        :class="{ stacked: collapsed }"
+        role="group"
+        aria-label="Switch between running the shop and your own chair"
+      >
+        <button
+          type="button"
+          :class="{ on: mode === 'shop' }"
+          :aria-pressed="mode === 'shop'"
+          :title="collapsed ? 'Shop' : undefined"
+          @click="onSwitchMode('shop')"
         >
-          <button
-            type="button"
-            :class="{ on: mode === 'shop' }"
-            :aria-pressed="mode === 'shop'"
-            :title="collapsed ? 'Shop' : undefined"
-            @click="onSwitchMode('shop')"
-          >
-            {{ collapsed ? 'S' : 'Shop' }}
-          </button>
-          <button
-            type="button"
-            :class="{ on: mode === 'chair' }"
-            :aria-pressed="mode === 'chair'"
-            :title="collapsed ? 'My Chair' : undefined"
-            @click="onSwitchMode('chair')"
-          >
-            {{ collapsed ? 'C' : 'My Chair' }}
-          </button>
-        </div>
-        <p v-if="!collapsed" class="mode-hint">You run the shop and cut hair.</p>
+          {{ collapsed ? 'S' : 'Shop' }}
+        </button>
+        <button
+          type="button"
+          :class="{ on: mode === 'chair' }"
+          :aria-pressed="mode === 'chair'"
+          :title="collapsed ? 'My Chair' : undefined"
+          @click="onSwitchMode('chair')"
+        >
+          {{ collapsed ? 'C' : 'My Chair' }}
+        </button>
       </div>
 
       <AppNav :collapsed="collapsed" />
@@ -273,12 +271,6 @@ async function onSwitchMode(next: 'shop' | 'chair') {
   padding: 0;
 }
 
-.mode {
-  display: flex;
-  flex-direction: column;
-  gap: 0.375rem;
-}
-
 .mode-switch {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -313,13 +305,6 @@ async function onSwitchMode(next: 'shop' | 'chair') {
 .mode-switch button:focus-visible {
   outline: 2px solid var(--fc-accent);
   outline-offset: 1px;
-}
-
-.mode-hint {
-  margin: 0;
-  padding: 0 0.25rem;
-  font-size: 0.625rem;
-  color: var(--fc-ink-faint);
 }
 
 .rail-foot {
