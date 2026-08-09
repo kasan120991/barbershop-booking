@@ -6,6 +6,8 @@
  * nobody did anything, instead of exposed because somebody forgot something.
  */
 
+import { ADMIN_ONLY_PATHS } from '../composables/useNavigation';
+
 const PUBLIC_ROUTES = new Set(['/login']);
 
 export default defineNuxtRouteMiddleware(async (to) => {
@@ -27,5 +29,11 @@ export default defineNuxtRouteMiddleware(async (to) => {
 
   if (auth.isSignedIn && isPublic) {
     return navigateTo('/');
+  }
+
+  // Hiding a nav link is presentation; this is the actual check. The API enforces
+  // it a third time, because a client-side guard protects nothing on its own.
+  if (auth.isSignedIn && !auth.isAdmin && ADMIN_ONLY_PATHS.includes(to.path)) {
+    return navigateTo('/my-day');
   }
 });

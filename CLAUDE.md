@@ -207,6 +207,14 @@ Recomputed on every queue or appointment mutation, then broadcast.
   confirms a prop still exists before you write the markup.
 - **Colour lives in exactly two files**: `app/app/theme/preset.ts` (PrimeVue tokens) and
   `app/app/assets/css/main.css` (app tokens). Components reference custom properties, never hex.
+- **The shell is "two hats".** The owner holds both roles, so `useShopMode()` decides whether the
+  rail shows the *Shop* nav or the *My chair* nav; a BARBER-only account is pinned to `chair` and
+  the switch is not rendered at all. Nav is data in `useNavigation()`, not markup — add a
+  destination there, once.
+- **Mode is a cookie, not localStorage**, because the rail renders during SSR and localStorage does
+  not exist there. Using it would send the wrong nav and visibly swap after hydration.
+- **Hiding a nav link is not access control.** `ADMIN_ONLY_PATHS` is derived from the same nav model
+  and enforced in the route guard, and the API enforces it again. All three, always.
 - The staff app is **single-theme dark** on purpose — `.fc-dark` is pinned on `<html>` so the shop
   tablet cannot flip to light mode because someone changed an iPad setting.
 - Semantic red is reserved for failure states and is never decorative. The brand accent is amber
