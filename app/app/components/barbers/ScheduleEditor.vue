@@ -185,14 +185,14 @@ async function onSave() {
             <input
               v-model="range.start"
               type="time"
-              class="time"
+              class="fc-input"
               :aria-label="`${dayName(dayOfWeek)} shift ${index + 1} start`"
             >
             <span class="dash">–</span>
             <input
               v-model="range.end"
               type="time"
-              class="time"
+              class="fc-input"
               :aria-label="`${dayName(dayOfWeek)} shift ${index + 1} end`"
             >
             <Button
@@ -310,23 +310,6 @@ h3 {
 
 /* Native time input: keyboard-friendly, locale-aware, and lighter than a full
    date-picker overlay for "what time do you start". */
-.time {
-  background: var(--fc-input);
-  border: 1px solid var(--fc-line);
-  border-radius: 5px;
-  color: var(--fc-ink);
-  font: inherit;
-  font-size: 0.8125rem;
-  padding: 0.375rem 0.5rem;
-  color-scheme: dark;
-  font-variant-numeric: tabular-nums;
-}
-
-.time:focus-visible {
-  outline: 2px solid var(--fc-accent);
-  outline-offset: 1px;
-}
-
 @media (max-width: 620px) {
   .day {
     grid-template-columns: 1fr;

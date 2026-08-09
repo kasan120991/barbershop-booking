@@ -220,6 +220,11 @@ Recomputed on every queue or appointment mutation, then broadcast.
   confirms a prop still exists before you write the markup.
 - **Colour lives in exactly two files**: `app/app/theme/preset.ts` (PrimeVue tokens) and
   `app/app/assets/css/main.css` (app tokens). Components reference custom properties, never hex.
+- **Native `<input type="date">`/`type="time"` use the shared `.fc-input` class** — never a local
+  copy. It derives padding, radius, font size and height from PrimeVue's own `--p-form-field-*`
+  tokens, so a native input matches a `Select` by construction. This existed as four hand-tuned
+  copies that had drifted to three paddings and two font sizes before being consolidated; if a new
+  control needs different metrics, change the token, not one component.
 - **The shell is "two hats".** The owner holds both roles, so `useShopMode()` decides whether the
   rail shows the *Shop* nav or the *My chair* nav; a BARBER-only account is pinned to `chair` and
   the switch is not rendered at all. Nav is data in `useNavigation()`, not markup — add a

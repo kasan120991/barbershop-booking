@@ -333,7 +333,7 @@ async function onDeleteClosure(closureId: string) {
                 <input
                   v-model="row.open"
                   type="time"
-                  class="time"
+                  class="fc-input"
                   :disabled="row.isClosed"
                   :aria-label="`${dayName(row.dayOfWeek)} opening time`"
                 >
@@ -341,7 +341,7 @@ async function onDeleteClosure(closureId: string) {
                 <input
                   v-model="row.close"
                   type="time"
-                  class="time"
+                  class="fc-input"
                   :disabled="row.isClosed"
                   :aria-label="`${dayName(row.dayOfWeek)} closing time`"
                 >
@@ -437,11 +437,11 @@ async function onDeleteClosure(closureId: string) {
               <div class="closure-form">
                 <div class="field">
                   <label for="cl-start" class="fc-label">From</label>
-                  <input id="cl-start" v-model="closureForm.startDate" type="date" class="time">
+                  <input id="cl-start" v-model="closureForm.startDate" type="date" class="fc-input">
                 </div>
                 <div class="field">
                   <label for="cl-end" class="fc-label">To</label>
-                  <input id="cl-end" v-model="closureForm.endDate" type="date" class="time">
+                  <input id="cl-end" v-model="closureForm.endDate" type="date" class="fc-input">
                 </div>
                 <div class="field grow">
                   <label for="cl-reason" class="fc-label">Reason</label>
@@ -584,31 +584,6 @@ async function onDeleteClosure(closureId: string) {
 .dash {
   color: var(--fc-ink-faint);
 }
-
-/* Native date/time inputs: PrimeVue's DatePicker is a heavier control than a shop
-   admin needs for "what time do you open", and the native one is keyboard-friendly
-   and understands the device locale. */
-.time {
-  background: var(--fc-input);
-  border: 1px solid var(--fc-line);
-  border-radius: 5px;
-  color: var(--fc-ink);
-  font: inherit;
-  font-size: 0.8125rem;
-  padding: 0.4375rem 0.5rem;
-  color-scheme: dark;
-  min-width: 0;
-}
-
-.time:disabled {
-  opacity: 0.4;
-}
-
-.time:focus-visible {
-  outline: 2px solid var(--fc-accent);
-  outline-offset: 1px;
-}
-
 /* Shop */
 .two-col {
   display: grid;

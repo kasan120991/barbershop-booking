@@ -120,11 +120,11 @@ async function onRemove(exceptionId: string) {
       <div class="row">
         <div class="field">
           <label for="ex-start" class="fc-label">From</label>
-          <input id="ex-start" v-model="form.startDate" type="date" class="native">
+          <input id="ex-start" v-model="form.startDate" type="date" class="fc-input">
         </div>
         <div class="field">
           <label for="ex-end" class="fc-label">To</label>
-          <input id="ex-end" v-model="form.endDate" type="date" class="native">
+          <input id="ex-end" v-model="form.endDate" type="date" class="fc-input">
         </div>
       </div>
 
@@ -140,11 +140,11 @@ async function onRemove(exceptionId: string) {
       <div v-if="!form.allDay" class="row">
         <div class="field">
           <label for="ex-from" class="fc-label">Start</label>
-          <input id="ex-from" v-model="form.startTime" type="time" class="native">
+          <input id="ex-from" v-model="form.startTime" type="time" class="fc-input">
         </div>
         <div class="field">
           <label for="ex-to" class="fc-label">End</label>
-          <input id="ex-to" v-model="form.endTime" type="time" class="native">
+          <input id="ex-to" v-model="form.endTime" type="time" class="fc-input">
         </div>
       </div>
 
@@ -232,23 +232,6 @@ h3 {
   gap: 0.5rem;
   font-size: 0.8125rem;
   color: var(--fc-ink-muted);
-}
-
-.native {
-  background: var(--fc-input);
-  border: 1px solid var(--fc-line);
-  border-radius: 5px;
-  color: var(--fc-ink);
-  font: inherit;
-  font-size: 0.8125rem;
-  padding: 0.4375rem 0.5rem;
-  color-scheme: dark;
-  min-width: 0;
-}
-
-.native:focus-visible {
-  outline: 2px solid var(--fc-accent);
-  outline-offset: 1px;
 }
 
 .list {

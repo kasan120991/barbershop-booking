@@ -110,7 +110,7 @@ const dayLabel = computed(() => {
 
       <div class="field">
         <label for="cal-date" class="fc-label">Date</label>
-        <input id="cal-date" v-model="date" type="date" class="native">
+        <input id="cal-date" v-model="date" type="date" class="fc-input">
       </div>
 
       <div class="field grow">
@@ -186,22 +186,6 @@ const dayLabel = computed(() => {
 .field.grow {
   flex: 1;
   min-width: 16rem;
-}
-
-.native {
-  background: var(--fc-input);
-  border: 1px solid var(--fc-line);
-  border-radius: 5px;
-  color: var(--fc-ink);
-  font: inherit;
-  font-size: 0.875rem;
-  padding: 0.5rem 0.625rem;
-  color-scheme: dark;
-}
-
-.native:focus-visible {
-  outline: 2px solid var(--fc-accent);
-  outline-offset: 1px;
 }
 
 .results {
