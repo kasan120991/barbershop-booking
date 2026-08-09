@@ -1,0 +1,210 @@
+# Francis Cutz — Shop OS
+
+Operations platform for the Francis Cutz barbershop. Not just a booking app — four systems in one:
+
+1. **Booking** — clients book a barber online or in the shop.
+2. **Walk-in queue** — a live waitlist running alongside the appointment calendar.
+3. **Point of sale** — payment taken after the cut, by card or cash.
+4. **Barber payouts** — each barber cashes out their own card earnings, daily.
+
+The shop runs on **booth rent**: barbers keep 100% of every cut and pay the shop fixed rent.
+Card money flows **directly into each barber's own Stripe account** and never touches a shop
+balance — so there is no commission ledger and no chargeback exposure for the shop. Rent is
+tracked in-app and settled offline.
+
+---
+
+## Locked product decisions
+
+Do not silently redesign around these. If a task seems to require changing one, stop and ask.
+
+| Area | Decision |
+|---|---|
+| Walk-ins | Live queue with position + estimated wait; barbers call "next" |
+| Barber pay | Booth rent — barber keeps 100%, no per-cut commission |
+| Payment timing | Pay **after** service only; no deposits, no card on file |
+| Client identity | Phone number, **unverified** — no SMS OTP |
+| Stripe | Connect **direct charges** on the barber's connected account, no application fee |
+| Cash out | Automatic daily payout (free) **+** manual Instant Payout button (~1.5% fee) |
+| Rent | Tracked in-app, marked paid offline (cash/Zelle/check) |
+| `booking` app | Public online booking **and** a locked-down `/kiosk` route |
+| Roles | `ADMIN` and `BARBER` — a **set**, because the owner also cuts hair |
+| Services & hours | Fully shop-controlled — admin owns menu, prices, durations, schedules |
+| Notifications | None in v1 — in-app and on-screen only |
+| Scope | Single location, USD only, no retail product sales |
+| Post-MVP | Vapi AI receptionist will handle front-desk tasks by phone |
+
+---
+
+## Workspace layout
+
+pnpm workspace monorepo. Node 22+, pnpm 11 (via corepack).
+
+```
+packages/shared/   @francis/shared    the API contract — zod schemas, types, socket events, pure helpers
+server/            @francis/server    Express 5 + Prisma + MySQL + Socket.IO + Stripe
+app/               @francis/app       Nuxt 4 + PrimeVue — STAFF (admin + barber), authenticated
+booking/           @francis/booking   Nuxt 4 + PrimeVue — PUBLIC booking + /kiosk
+```
+
+### Dependency rules — enforce these
+
+- **`shared` is runtime-agnostic.** No Prisma, no Express, no Vue, no Node built-ins, no `process.env`.
+  It gets imported into a browser bundle. The moment it imports Prisma, a database client ships to
+  the client.
+- **`shared` may not import from any other workspace package.** It is a leaf.
+- **`app` and `booking` never import from `server`.** They talk to it over HTTP and Socket.IO, and
+  they share types only via `shared`.
+- **Prisma types stay in `server`.** To send a model to a frontend, map it to a zod-defined DTO from
+  `shared`. That mapping boundary is what stops `passwordHash`, `stripeAccountId`, and client phone
+  numbers from leaking into a response by accident.
+- `shared` exports **TypeScript source**, not a build artifact. Both Nuxt apps must list it in
+  `build.transpile`. The server runs `tsx` in dev and bundles it with `tsup` for production.
+
+---
+
+## Non-negotiable engineering rules
+
+**Money is always integer cents.** Never a float, never a JS number of dollars. Fields are named
+`*Cents` (`priceCents`, `tipCents`, `totalCents`). Formatting for display happens once, in
+`shared/src/money.ts`.
+
+**Never trust a client-supplied amount.** Prices are always recomputed server-side from `Service`
+rows before creating a PaymentIntent.
+
+**Times are stored UTC.** The shop timezone lives in `ShopSettings`. All slot arithmetic goes
+through a timezone-aware library (Luxon or `date-fns-tz`) — never raw `Date` math. Weekly recurring
+schedules cross DST boundaries twice a year and naive arithmetic silently shifts every appointment
+by an hour.
+
+**Snapshot prices and durations.** `AppointmentService` and `QueueEntryService` store their own
+`priceCents` and `durationMinutes` copied at booking time. Editing the service menu must never
+rewrite the history or the revenue of a past cut.
+
+**Sockets are broadcast-only.** Every mutation goes over authenticated REST; the server emits
+afterward. Never accept a write over a socket event — it would duplicate auth, validation, and
+audit logging in a second place that will drift.
+
+**Business logic lives in `server/src/services/`.** Plain functions taking plain arguments — no
+`req`, no `res`, no Express coupling. Routes parse, authorize, and delegate. This is what lets the
+Vapi voice receptionist reuse the exact same booking path later instead of reimplementing it (and
+inheriting none of its safety).
+
+**Queue order is derived, never stored.** Sort by `(priority DESC, joinedAt ASC)` and compute
+position on read. A stored `position` integer that gets reshuffled is a race-condition factory.
+
+**Audit every money movement**, queue reorder, appointment status change, and role change.
+
+---
+
+## The three pieces of real logic
+
+Everything else is CRUD. These are where the bugs will be, so they are pure functions over a
+fetched snapshot and carry required unit tests.
+
+### `services/availability.ts`
+For a barber + service set + date: start from `BarberSchedule` for that weekday, subtract
+`ScheduleException`, intersect with `ShopHours` minus `ShopClosure`, subtract non-cancelled
+`Appointment` ranges, subtract time committed to the live queue, then emit slots at the configured
+granularity that fit the total requested duration.
+
+### `services/booking.ts` — double-booking prevention
+MySQL cannot express "no overlapping ranges" as a unique constraint. Every booking write runs in a
+transaction that first takes a row lock on a per-barber-per-day `BarberDayLock` row
+(`SELECT ... FOR UPDATE`), re-checks overlap **inside** the lock, then inserts. Every path that
+creates an appointment must use it — online, kiosk, staff, and later Vapi. No exceptions.
+
+### `services/queue.ts` — the estimator
+The queue is not a naive FIFO; it must respect booked appointments or it will seat a walk-in into a
+slot someone reserved online. For each barber, walk forward from now consuming the gaps between
+their booked appointments, assigning each waiting entry the first gap that fits its duration, and
+produce `estimatedReadyAt`. "Any barber" entries go to whichever eligible barber frees up first.
+Recomputed on every queue or appointment mutation, then broadcast.
+
+---
+
+## Realtime
+
+- Rooms: `shop` (all staff), `barber:{id}`, `kiosk`, `display`.
+- Handshake auth reuses the same `Session` / `Device` lookup as the HTTP middleware.
+- Event payload map lives in `shared/src/events.ts`, so renaming an event breaks the build on the
+  server and both frontends at once.
+- **`kiosk` and `display` rooms get a redacted payload** — first name + last initial only, never a
+  full phone number. That screen faces the whole shop.
+
+---
+
+## Payments (Stripe Connect, direct charges)
+
+- **Express** connected accounts, onboarded via Stripe-hosted Account Links. Set the payout
+  schedule to daily automatic at creation.
+- Create the PaymentIntent **on the connected account** (`{ stripeAccount }`) with **no**
+  `application_fee_amount`. The barber is merchant of record and their account bears Stripe's fee.
+- Gate taking payment on `charges_enabled`; surface `payouts_enabled` in the barber view.
+- **Capture flow (v1):** no reader hardware. The barber taps "Take payment" and the app shows a QR
+  code / short link to a checkout page in `booking` running Payment Element against that barber's
+  account. Tip is selected there. Stripe Terminal is a later phase.
+- **Cash** is a first-class `Payment` row with `method: CASH` and no Stripe object.
+- **Instant payout** requires a **debit card** as external account, not just a bank. Always show
+  the exact fee before confirming.
+- **Webhooks:** one endpoint, signature-verified, **raw body**, idempotent by `event.id` persisted
+  in `WebhookEvent`. Connected-account events arrive with `event.account` — route by that.
+
+---
+
+## Auth & security
+
+- **Staff:** email + password hash → DB-backed `Session` in an httpOnly, SameSite=Lax, Secure
+  cookie. CSRF token on mutations. Barbers may only read/write their own appointments, payments,
+  payouts, and rent.
+- **Kiosk:** admin issues a pairing code; the device exchanges it for a long-lived device token.
+  Narrow scope — join queue, read the board. It cannot read client history, list phone numbers, or
+  take payment.
+- **Public booking:** unauthenticated, rate-limited by IP **and** by phone number.
+- **Because phones are unverified,** `/me` requires phone **plus** matching first name and returns
+  only upcoming appointments — never history, never notes, never the full name. Cancellation links
+  use opaque per-appointment tokens, not guessable IDs. Adding OTP later upgrades this cleanly.
+- Secrets live in `.env`, never committed. Every app ships an `.env.example`.
+
+---
+
+## Conventions
+
+- TypeScript everywhere, `strict` on, all packages extend `tsconfig.base.json`.
+- Validate every request body, query, and param with a zod schema from `shared`.
+- Prisma models `PascalCase` singular; enum values `SCREAMING_SNAKE_CASE`.
+- API routes are `/api/<resource>` in plural kebab-case.
+- Vue components `PascalCase`; composables `useThing()`.
+- Prefer PrimeVue components over hand-rolled UI. **Use the `primevue` MCP** to check component
+  APIs rather than guessing — PrimeVue 5 differs from v3/v4 in props and theming.
+- Tests: vitest. Required for `availability`, `booking`, and `queue`; optional elsewhere.
+
+## Commands
+
+```bash
+pnpm install           # once, at the root
+pnpm db:up             # start MySQL in docker
+pnpm dev               # run server + app + booking together
+pnpm dev:server        # or individually
+pnpm typecheck         # must pass across the whole workspace
+pnpm test
+```
+
+## Gotchas
+
+- **Nuxt 4's default `srcDir` is `app/`.** So inside the folder named `app/`, pages live at
+  `app/app/pages/`. Same for `booking/app/pages/`. This looks like a mistake and is not — do not
+  "fix" it.
+- **pnpm 11 blocks dependency build scripts by default.** If a native dependency fails to install,
+  add it to `onlyBuiltDependencies` in `pnpm-workspace.yaml` — deliberately, with a reason. Prefer
+  dependencies with prebuilt binaries (e.g. `@node-rs/argon2` over `argon2`) to avoid this entirely.
+- **Prisma 7 has no postinstall.** Run `prisma generate` explicitly after schema changes; it will
+  not happen automatically on install.
+
+## Build phases
+
+Foundation → server+shared skeleton → schema+seed → auth → catalog & schedules → availability &
+booking → queue → realtime → `app` scaffold → admin views → barber views → `booking` scaffold →
+kiosk → Stripe Connect → payouts & rent → reporting → deploy → *(post-MVP)* Vapi.
+
+The user directs each phase. Do not jump ahead into a later phase unasked.

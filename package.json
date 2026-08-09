@@ -1,0 +1,28 @@
+{
+  "name": "francis-cutz",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Francis Cutz Shop OS — booking, walk-in queue, POS and barber payouts",
+  "packageManager": "pnpm@11.20.0",
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "scripts": {
+    "dev": "pnpm -r --parallel run dev",
+    "dev:server": "pnpm --filter @francis/server run dev",
+    "dev:app": "pnpm --filter @francis/app run dev",
+    "dev:booking": "pnpm --filter @francis/booking run dev",
+    "build": "pnpm -r run build",
+    "typecheck": "pnpm -r run typecheck",
+    "lint": "pnpm -r run lint",
+    "test": "pnpm -r run test",
+    "db:up": "docker compose up -d mysql",
+    "db:down": "docker compose down",
+    "db:migrate": "pnpm --filter @francis/server run db:migrate",
+    "db:studio": "pnpm --filter @francis/server run db:studio",
+    "db:seed": "pnpm --filter @francis/server run db:seed"
+  },
+  "devDependencies": {
+    "typescript": "5.9.3"
+  }
+}

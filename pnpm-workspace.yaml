@@ -1,0 +1,10 @@
+packages:
+  - packages/*
+  - server
+  - app
+  - booking
+
+# pnpm 11 blocks dependency build scripts by default (supply-chain hardening).
+# Any package that legitimately needs to run install scripts must be listed here.
+# Keep this list short and justify every entry — that is the whole point of it.
+onlyBuiltDependencies: []
