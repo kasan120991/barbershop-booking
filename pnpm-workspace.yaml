@@ -9,3 +9,7 @@ packages:
 allowBuilds:
   # Downloads the platform-native binary it compiles with. Required by tsup and vitest.
   esbuild: true
+  # Downloads the query and schema engine binaries. Without them the Prisma CLI
+  # cannot generate a client or run a migration.
+  '@prisma/engines': true
+  prisma: true

@@ -10,6 +10,7 @@ import { createApp } from './app.js';
 import { SERVICE_NAME } from './config/constants.js';
 import { env } from './config/env.js';
 import { logger } from './lib/logger.js';
+import { disconnectPrisma } from './lib/prisma.js';
 
 const SHUTDOWN_TIMEOUT_MS = 10_000;
 
@@ -42,8 +43,17 @@ function shutdown(signal: string): void {
       logger.error({ err: error }, 'Error during shutdown');
       process.exit(1);
     }
-    logger.info('Shutdown complete');
-    process.exit(0);
+
+    // Only after in-flight requests have drained — closing the pool first would
+    // fail the very queries we are waiting on.
+    disconnectPrisma()
+      .catch((disconnectError: unknown) => {
+        logger.error({ err: disconnectError }, 'Error disconnecting from the database');
+      })
+      .finally(() => {
+        logger.info('Shutdown complete');
+        process.exit(0);
+      });
   });
 }
 

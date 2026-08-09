@@ -8,14 +8,19 @@ const app = createApp();
 
 describe('GET /api/health', () => {
   it('returns a payload matching the shared contract', async () => {
-    const response = await request(app).get('/api/health').expect(200);
+    const response = await request(app).get('/api/health');
 
     // The real assertion: the server's response satisfies the schema both Nuxt
     // apps type their fetch against. If these drift, this fails.
     const parsed = healthResponseSchema.safeParse(response.body);
     expect(parsed.error?.issues ?? []).toEqual([]);
     expect(parsed.success).toBe(true);
-    expect(response.body.status).toBe('ok');
+
+    // 200/ok with a database, 503/degraded without one — both are contract-valid,
+    // so this passes whether or not MAMP is running.
+    expect([200, 503]).toContain(response.status);
+    expect(response.body.status).toBe(response.status === 200 ? 'ok' : 'degraded');
+    expect(response.body.database).toBe(response.status === 200 ? 'up' : 'down');
   });
 
   it('echoes a request id so a report maps to a log line', async () => {

@@ -197,6 +197,11 @@ pnpm test
 **MySQL comes from MAMP**, not Docker — start it from the MAMP app. It listens on
 **port 8889** with `root`/`root`, and this project uses the `francis_cutz` database.
 
+Database-backed tests run against a **separate** `francis_cutz_test` database and must never
+touch development data. Create it once with
+`pnpm --filter @francis/server db:test:setup`. Tests that need a database skip cleanly when it
+is unreachable, so the suite still passes without MAMP running.
+
 ## Gotchas
 
 - **Nuxt 4's default `srcDir` is `app/`.** So inside the folder named `app/`, pages live at
@@ -206,8 +211,17 @@ pnpm test
   install, add it to **`allowBuilds`** in `pnpm-workspace.yaml` — deliberately, with a reason.
   (This is `allowBuilds` in pnpm 11, not pnpm 10's `onlyBuiltDependencies`.) Prefer dependencies
   with prebuilt binaries — e.g. `@node-rs/argon2` over `argon2` — to avoid the question entirely.
-- **Prisma 7 has no postinstall.** Run `prisma generate` explicitly after schema changes; it will
-  not happen automatically on install.
+- **Prisma 7 differs sharply from v5/v6.** Run `pnpm --filter @francis/server db:generate`
+  explicitly after any schema change — `@prisma/client` has no postinstall. The generator is
+  `prisma-client` (not `prisma-client-js`) and `output` is required. Datasource config lives in
+  `server/prisma.config.ts`, not in a `datasource url`. Generated row types are named
+  `<Model>Model` (`BarberModel`), because the bare name is the query delegate.
+- **The MariaDB driver adapter does NOT accept a `url` option.** Passing one produces no
+  connection and surfaces as a baffling `pool timeout after 10000ms`. It needs discrete
+  host/port/user/password/database — see `server/src/config/database.ts`, which parses
+  `DATABASE_URL` into them.
+- **`STORED` is a reserved word in MySQL 8** (generated columns). It cannot be a bare column alias
+  in raw SQL.
 
 ## Build phases
 

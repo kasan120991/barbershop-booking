@@ -1,0 +1,763 @@
+// Francis Cutz — Shop OS data model.
+//
+// Rules that this schema encodes, and that must survive every future change:
+//   * Money is ALWAYS integer cents, in a field named `*Cents`. Never Float/Decimal.
+//   * Times are stored UTC. The shop's display timezone lives in ShopSettings.
+//   * Prices and durations are SNAPSHOTTED onto appointment/queue rows at booking
+//     time, so editing the service menu never rewrites the revenue of a past cut.
+//   * Queue order is DERIVED — sort by (priority DESC, joinedAt ASC). There is
+//     deliberately no stored `position` column to drift or race.
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "mysql"
+}
+
+// ---------------------------------------------------------------------------
+// Enums
+// ---------------------------------------------------------------------------
+
+enum Role {
+  ADMIN
+  BARBER
+}
+
+enum BarberStatus {
+  ACTIVE
+  INACTIVE
+}
+
+enum DeviceType {
+  KIOSK
+  DISPLAY
+}
+
+enum ScheduleExceptionType {
+  TIME_OFF
+  BLOCK
+  EXTRA_HOURS
+}
+
+enum AppointmentStatus {
+  BOOKED
+  IN_PROGRESS
+  COMPLETED
+  CANCELLED
+  NO_SHOW
+}
+
+enum AppointmentSource {
+  ONLINE
+  KIOSK
+  STAFF
+  WALK_IN
+  VOICE
+}
+
+enum QueueStatus {
+  WAITING
+  CALLED
+  IN_CHAIR
+  COMPLETED
+  CANCELLED
+  NO_SHOW
+}
+
+enum PaymentMethod {
+  CARD_ONLINE
+  CARD_TERMINAL
+  CASH
+  OTHER
+}
+
+enum PaymentStatus {
+  PENDING
+  SUCCEEDED
+  FAILED
+  REFUNDED
+  PARTIALLY_REFUNDED
+  VOIDED
+}
+
+enum PayoutType {
+  STANDARD_AUTO
+  INSTANT
+}
+
+enum PayoutStatus {
+  PENDING
+  IN_TRANSIT
+  PAID
+  FAILED
+  CANCELED
+}
+
+enum RentCadence {
+  WEEKLY
+  MONTHLY
+}
+
+enum RentChargeStatus {
+  DUE
+  PAID
+  PARTIAL
+  WAIVED
+}
+
+enum RentPaymentMethod {
+  CASH
+  ZELLE
+  CHECK
+  CARD_MANUAL
+  OTHER
+}
+
+// ---------------------------------------------------------------------------
+// Shop configuration
+// ---------------------------------------------------------------------------
+
+/// Single row. `id` is pinned to 1 so there can never be a second shop config.
+model ShopSettings {
+  id       Int    @id @default(1)
+  name     String @default("Francis Cutz")
+  /// IANA zone, e.g. "America/New_York". ALL slot arithmetic resolves through this.
+  timezone String @default("America/New_York")
+  phone    String?
+  addressLine1 String?
+  addressLine2 String?
+  city         String?
+  state        String?
+  postalCode   String?
+
+  /// Booking slots are offered on this grid, in minutes.
+  slotGranularityMinutes Int @default(15)
+  /// How far ahead the public booking page will show availability.
+  bookingHorizonDays     Int @default(30)
+  /// A client cannot book or cancel online within this many minutes of the start.
+  minimumNoticeMinutes   Int @default(60)
+
+  walkInQueueEnabled  Boolean @default(true)
+  onlineBookingEnabled Boolean @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("shop_settings")
+}
+
+/// Recurring weekly opening hours. dayOfWeek: 0 = Sunday .. 6 = Saturday.
+/// Minutes from local midnight, so DST never shifts the shop's opening time.
+model ShopHours {
+  id          String  @id @default(cuid())
+  dayOfWeek   Int
+  openMinute  Int
+  closeMinute Int
+  isClosed    Boolean @default(false)
+
+  @@unique([dayOfWeek, openMinute])
+  @@index([dayOfWeek])
+  @@map("shop_hours")
+}
+
+/// Holidays and one-off closures. Overrides ShopHours for the covered range.
+model ShopClosure {
+  id      String   @id @default(cuid())
+  startAt DateTime @db.DateTime(3)
+  endAt   DateTime @db.DateTime(3)
+  reason  String?
+
+  createdAt DateTime @default(now())
+
+  @@index([startAt, endAt])
+  @@map("shop_closures")
+}
+
+// ---------------------------------------------------------------------------
+// Staff, auth, devices
+// ---------------------------------------------------------------------------
+
+model User {
+  id           String  @id @default(cuid())
+  email        String  @unique
+  passwordHash String
+  firstName    String
+  lastName     String
+  phone        String?
+  isActive     Boolean @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  roles              UserRole[]
+  sessions           Session[]
+  barber             Barber?
+  auditLogs          AuditLog[]
+  recordedPayments   Payment[]      @relation("PaymentRecordedBy")
+  createdAppointments Appointment[] @relation("AppointmentCreatedBy")
+  createdRefunds     Refund[]
+  initiatedPayouts   Payout[]
+  recordedRentPayments RentPayment[]
+
+  @@map("users")
+}
+
+/// Roles are a SET, not a column: the owner is both ADMIN and BARBER.
+model UserRole {
+  userId String
+  role   Role
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([userId, role])
+  @@map("user_roles")
+}
+
+/// DB-backed so a session can be revoked and so Socket.IO authenticates the
+/// same way HTTP middleware does. Only the hash of the token is stored.
+model Session {
+  id        String   @id @default(cuid())
+  tokenHash String   @unique
+  userId    String
+  expiresAt DateTime @db.DateTime(3)
+  userAgent String?  @db.Text
+  ipAddress String?
+  revokedAt DateTime? @db.DateTime(3)
+  createdAt DateTime @default(now())
+  lastSeenAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([expiresAt])
+  @@map("sessions")
+}
+
+/// A paired kiosk tablet or wall display. Narrow scope by design: it can join the
+/// queue and read the board, and nothing else.
+model Device {
+  id         String     @id @default(cuid())
+  label      String
+  type       DeviceType @default(KIOSK)
+  tokenHash  String     @unique
+  lastSeenAt DateTime?  @db.DateTime(3)
+  revokedAt  DateTime?  @db.DateTime(3)
+  createdAt  DateTime   @default(now())
+
+  @@map("devices")
+}
+
+// ---------------------------------------------------------------------------
+// Barbers and chairs
+// ---------------------------------------------------------------------------
+
+model Barber {
+  id          String       @id @default(cuid())
+  userId      String       @unique
+  displayName String
+  slug        String       @unique
+  bio         String?      @db.Text
+  avatarUrl   String?
+  sortOrder   Int          @default(0)
+  status      BarberStatus @default(ACTIVE)
+
+  acceptsWalkIns Boolean @default(true)
+  acceptsOnline  Boolean @default(true)
+
+  /// Stripe Connect (direct charges — the barber is merchant of record).
+  /// Mirrored from `account.updated` webhooks; never trusted from the client.
+  stripeAccountId      String?  @unique
+  chargesEnabled       Boolean  @default(false)
+  payoutsEnabled       Boolean  @default(false)
+  detailsSubmitted     Boolean  @default(false)
+  instantPayoutEligible Boolean @default(false)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user               User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  chair              Chair?
+  services           BarberService[]
+  schedules          BarberSchedule[]
+  scheduleExceptions ScheduleException[]
+  appointments       Appointment[]
+  queueEntries       QueueEntry[]
+  dayLocks           BarberDayLock[]
+  payments           Payment[]
+  payouts            Payout[]
+  rentPlans          RentPlan[]
+  rentCharges        RentCharge[]
+
+  @@index([status, sortOrder])
+  @@map("barbers")
+}
+
+model Chair {
+  id       String  @id @default(cuid())
+  label    String  @unique
+  barberId String? @unique
+  isActive Boolean @default(true)
+
+  barber       Barber?       @relation(fields: [barberId], references: [id], onDelete: SetNull)
+  appointments Appointment[]
+
+  @@map("chairs")
+}
+
+// ---------------------------------------------------------------------------
+// Service menu — fully shop-controlled
+// ---------------------------------------------------------------------------
+
+model Service {
+  id              String  @id @default(cuid())
+  name            String
+  description     String? @db.Text
+  category        String?
+  /// Canonical price. Copied onto AppointmentService at booking time.
+  priceCents      Int
+  durationMinutes Int
+  isActive        Boolean @default(true)
+  sortOrder       Int     @default(0)
+  bookableOnline  Boolean @default(true)
+  bookableWalkIn  Boolean @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  barbers             BarberService[]
+  appointmentServices AppointmentService[]
+  queueEntryServices  QueueEntryService[]
+
+  @@index([isActive, sortOrder])
+  @@map("services")
+}
+
+/// Capability only: which barbers perform which service. Deliberately carries no
+/// price or duration override — the shop owns pricing.
+model BarberService {
+  barberId  String
+  serviceId String
+
+  barber  Barber  @relation(fields: [barberId], references: [id], onDelete: Cascade)
+  service Service @relation(fields: [serviceId], references: [id], onDelete: Cascade)
+
+  @@id([barberId, serviceId])
+  @@index([serviceId])
+  @@map("barber_services")
+}
+
+// ---------------------------------------------------------------------------
+// Schedules
+// ---------------------------------------------------------------------------
+
+/// Recurring weekly working hours. Multiple rows per weekday allow split shifts.
+/// Minutes from local midnight — see ShopHours for why not a DateTime.
+model BarberSchedule {
+  id          String @id @default(cuid())
+  barberId    String
+  dayOfWeek   Int
+  startMinute Int
+  endMinute   Int
+
+  barber Barber @relation(fields: [barberId], references: [id], onDelete: Cascade)
+
+  @@unique([barberId, dayOfWeek, startMinute])
+  @@index([barberId, dayOfWeek])
+  @@map("barber_schedules")
+}
+
+/// A dated override of the weekly schedule: time off, a mid-day block, or extra hours.
+model ScheduleException {
+  id       String                @id @default(cuid())
+  barberId String
+  type     ScheduleExceptionType
+  startAt  DateTime              @db.DateTime(3)
+  endAt    DateTime              @db.DateTime(3)
+  reason   String?
+
+  createdAt DateTime @default(now())
+
+  barber Barber @relation(fields: [barberId], references: [id], onDelete: Cascade)
+
+  @@index([barberId, startAt, endAt])
+  @@map("schedule_exceptions")
+}
+
+// ---------------------------------------------------------------------------
+// Clients
+// ---------------------------------------------------------------------------
+
+/// The phone number IS the identity — there are no client accounts. It is stored
+/// normalized to E.164 and is UNVERIFIED, which is why `/me` returns only
+/// upcoming appointments and never history or notes.
+model Client {
+  id          String  @id @default(cuid())
+  phoneE164   String  @unique
+  firstName   String
+  lastName    String?
+  email       String?
+  /// Staff-only. Never sent to a public or kiosk surface.
+  notes       String? @db.Text
+  visitCount  Int     @default(0)
+  noShowCount Int     @default(0)
+  lastVisitAt DateTime? @db.DateTime(3)
+  isBlocked   Boolean @default(false)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  appointments Appointment[]
+  queueEntries QueueEntry[]
+  payments     Payment[]
+
+  @@index([lastName, firstName])
+  @@map("clients")
+}
+
+// ---------------------------------------------------------------------------
+// Appointments
+// ---------------------------------------------------------------------------
+
+model Appointment {
+  id       String @id @default(cuid())
+  clientId String
+  barberId String
+  chairId  String?
+
+  startAt         DateTime @db.DateTime(3)
+  endAt           DateTime @db.DateTime(3)
+  durationMinutes Int
+  /// Sum of the snapshotted AppointmentService prices. Recomputed server-side only.
+  priceCentsTotal Int
+
+  status AppointmentStatus @default(BOOKED)
+  source AppointmentSource @default(ONLINE)
+  notes  String?           @db.Text
+
+  /// Opaque token for the public cancellation link, so appointment ids stay unguessable.
+  cancelToken     String    @unique @default(cuid())
+  cancelledAt     DateTime? @db.DateTime(3)
+  cancelReason    String?
+  createdByUserId String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  client       Client               @relation(fields: [clientId], references: [id])
+  barber       Barber               @relation(fields: [barberId], references: [id])
+  chair        Chair?               @relation(fields: [chairId], references: [id], onDelete: SetNull)
+  createdBy    User?                @relation("AppointmentCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
+  services     AppointmentService[]
+  payments     Payment[]
+  queueEntry   QueueEntry?
+
+  /// The overlap scan inside the booking transaction reads exactly this index.
+  @@index([barberId, startAt, endAt])
+  @@index([clientId])
+  @@index([status, startAt])
+  @@map("appointments")
+}
+
+/// Price and duration are COPIES taken at booking time, not live lookups.
+model AppointmentService {
+  id              String @id @default(cuid())
+  appointmentId   String
+  serviceId       String
+  priceCents      Int
+  durationMinutes Int
+  /// Denormalized so a deleted service still renders correctly on an old receipt.
+  nameSnapshot    String
+
+  appointment Appointment @relation(fields: [appointmentId], references: [id], onDelete: Cascade)
+  service     Service     @relation(fields: [serviceId], references: [id])
+
+  @@index([appointmentId])
+  @@index([serviceId])
+  @@map("appointment_services")
+}
+
+/// Serializes booking writes per barber per day.
+///
+/// MySQL cannot express "no overlapping ranges" as a unique constraint, so every
+/// path that creates an appointment takes `SELECT ... FOR UPDATE` on this row
+/// first, re-checks overlap inside the lock, and only then inserts.
+model BarberDayLock {
+  barberId String
+  /// Local shop date, "YYYY-MM-DD".
+  day      String
+
+  barber Barber @relation(fields: [barberId], references: [id], onDelete: Cascade)
+
+  @@id([barberId, day])
+  @@map("barber_day_locks")
+}
+
+// ---------------------------------------------------------------------------
+// Walk-in queue
+// ---------------------------------------------------------------------------
+
+/// Deliberately has NO `position` column — order is derived on read from
+/// (priority DESC, joinedAt ASC). A stored position reshuffles under concurrency.
+model QueueEntry {
+  id       String  @id @default(cuid())
+  clientId String
+  /// NULL means "any available barber".
+  barberId String?
+
+  status   QueueStatus @default(WAITING)
+  /// Higher wins. Reserved for staff bumping someone forward; audited when changed.
+  priority Int         @default(0)
+
+  joinedAt    DateTime  @default(now())
+  calledAt    DateTime? @db.DateTime(3)
+  startedAt   DateTime? @db.DateTime(3)
+  completedAt DateTime? @db.DateTime(3)
+
+  /// Output of the estimator, recomputed on every queue/appointment mutation.
+  estimatedReadyAt DateTime? @db.DateTime(3)
+  durationMinutes  Int
+  priceCentsTotal  Int
+
+  source        AppointmentSource @default(KIOSK)
+  notes         String?           @db.Text
+  appointmentId String?           @unique
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  client      Client              @relation(fields: [clientId], references: [id])
+  barber      Barber?             @relation(fields: [barberId], references: [id], onDelete: SetNull)
+  appointment Appointment?        @relation(fields: [appointmentId], references: [id], onDelete: SetNull)
+  services    QueueEntryService[]
+  payments    Payment[]
+
+  @@index([status, priority, joinedAt])
+  @@index([barberId, status])
+  @@map("queue_entries")
+}
+
+model QueueEntryService {
+  id              String @id @default(cuid())
+  queueEntryId    String
+  serviceId       String
+  priceCents      Int
+  durationMinutes Int
+  nameSnapshot    String
+
+  queueEntry QueueEntry @relation(fields: [queueEntryId], references: [id], onDelete: Cascade)
+  service    Service    @relation(fields: [serviceId], references: [id])
+
+  @@index([queueEntryId])
+  @@index([serviceId])
+  @@map("queue_entry_services")
+}
+
+// ---------------------------------------------------------------------------
+// Payments — Stripe Connect direct charges, no application fee
+// ---------------------------------------------------------------------------
+
+model Payment {
+  id            String  @id @default(cuid())
+  barberId      String
+  clientId      String?
+  appointmentId String?
+  queueEntryId  String?
+
+  method PaymentMethod
+  status PaymentStatus @default(PENDING)
+
+  /// Service subtotal, recomputed server-side from Service rows. Never client-supplied.
+  amountCents  Int
+  tipCents     Int    @default(0)
+  totalCents   Int
+  currency     String @default("USD")
+
+  /// The PaymentIntent lives ON the barber's connected account, so both ids are stored.
+  stripePaymentIntentId String? @unique
+  stripeChargeId        String? @unique
+  stripeAccountId       String?
+  /// Stripe's processing fee, borne by the barber's account. From the balance transaction.
+  stripeFeeCents        Int?
+  netCents              Int?
+
+  failureReason    String?
+  recordedByUserId String?
+  paidAt           DateTime? @db.DateTime(3)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  barber      Barber       @relation(fields: [barberId], references: [id])
+  client      Client?      @relation(fields: [clientId], references: [id], onDelete: SetNull)
+  appointment Appointment? @relation(fields: [appointmentId], references: [id], onDelete: SetNull)
+  queueEntry  QueueEntry?  @relation(fields: [queueEntryId], references: [id], onDelete: SetNull)
+  recordedBy  User?        @relation("PaymentRecordedBy", fields: [recordedByUserId], references: [id], onDelete: SetNull)
+  refunds     Refund[]
+
+  @@index([barberId, paidAt])
+  @@index([status])
+  @@index([appointmentId])
+  @@map("payments")
+}
+
+model Refund {
+  id              String  @id @default(cuid())
+  paymentId       String
+  amountCents     Int
+  reason          String?
+  stripeRefundId  String? @unique
+  createdByUserId String?
+
+  createdAt DateTime @default(now())
+
+  payment   Payment @relation(fields: [paymentId], references: [id], onDelete: Cascade)
+  createdBy User?   @relation(fields: [createdByUserId], references: [id], onDelete: SetNull)
+
+  @@index([paymentId])
+  @@map("refunds")
+}
+
+// ---------------------------------------------------------------------------
+// Payouts — mirrored from Stripe, never the source of truth
+// ---------------------------------------------------------------------------
+
+model Payout {
+  id             String       @id @default(cuid())
+  barberId       String
+  stripePayoutId String       @unique
+  amountCents    Int
+  /// Instant payouts cost roughly 1.5%; a standard daily payout is free.
+  feeCents       Int          @default(0)
+  currency       String       @default("USD")
+  type           PayoutType   @default(STANDARD_AUTO)
+  status         PayoutStatus @default(PENDING)
+  arrivalDate    DateTime?    @db.DateTime(3)
+  failureReason  String?
+
+  /// Set only when a barber pressed "Instant cash out"; null for automatic payouts.
+  initiatedByUserId String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  barber      Barber @relation(fields: [barberId], references: [id])
+  initiatedBy User?  @relation(fields: [initiatedByUserId], references: [id], onDelete: SetNull)
+
+  @@index([barberId, createdAt])
+  @@map("payouts")
+}
+
+// ---------------------------------------------------------------------------
+// Booth rent — tracked in-app, settled offline
+// ---------------------------------------------------------------------------
+
+model RentPlan {
+  id         String      @id @default(cuid())
+  barberId   String
+  amountCents Int
+  cadence    RentCadence @default(WEEKLY)
+  /// WEEKLY: 0-6 (day of week). MONTHLY: 1-28 (day of month).
+  anchorDay  Int
+  startDate  DateTime    @db.Date
+  endDate    DateTime?   @db.Date
+  isActive   Boolean     @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  barber  Barber       @relation(fields: [barberId], references: [id], onDelete: Cascade)
+  charges RentCharge[]
+
+  @@index([barberId, isActive])
+  @@map("rent_plans")
+}
+
+model RentCharge {
+  id          String           @id @default(cuid())
+  barberId    String
+  rentPlanId  String?
+  periodStart DateTime         @db.Date
+  periodEnd   DateTime         @db.Date
+  amountCents Int
+  dueDate     DateTime         @db.Date
+  status      RentChargeStatus @default(DUE)
+  note        String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  barber   Barber        @relation(fields: [barberId], references: [id], onDelete: Cascade)
+  rentPlan RentPlan?     @relation(fields: [rentPlanId], references: [id], onDelete: SetNull)
+  payments RentPayment[]
+
+  /// One charge per barber per period — makes the generator job safely re-runnable.
+  @@unique([barberId, periodStart])
+  @@index([barberId, status])
+  @@map("rent_charges")
+}
+
+model RentPayment {
+  id               String            @id @default(cuid())
+  rentChargeId     String
+  amountCents      Int
+  method           RentPaymentMethod @default(CASH)
+  paidAt           DateTime          @db.DateTime(3)
+  note             String?
+  recordedByUserId String?
+
+  createdAt DateTime @default(now())
+
+  rentCharge RentCharge @relation(fields: [rentChargeId], references: [id], onDelete: Cascade)
+  recordedBy User?      @relation(fields: [recordedByUserId], references: [id], onDelete: SetNull)
+
+  @@index([rentChargeId])
+  @@map("rent_payments")
+}
+
+// ---------------------------------------------------------------------------
+// Infrastructure
+// ---------------------------------------------------------------------------
+
+/// Idempotency for Stripe webhooks. `stripeEventId` is unique, so a redelivered
+/// event is recognized and skipped rather than double-applied.
+model WebhookEvent {
+  id            String    @id @default(cuid())
+  stripeEventId String    @unique
+  type          String
+  /// Present on connected-account events; used to route to the right barber.
+  stripeAccount String?
+  payload       Json
+  processedAt   DateTime? @db.DateTime(3)
+  error         String?   @db.Text
+
+  createdAt DateTime @default(now())
+
+  @@index([type])
+  @@index([processedAt])
+  @@map("webhook_events")
+}
+
+/// Written for every money movement, queue reorder, appointment status change,
+/// and role change. Actor is a user OR a device (the kiosk acts without a user).
+model AuditLog {
+  id            String  @id @default(cuid())
+  actorUserId   String?
+  actorDeviceId String?
+  action        String
+  entityType    String
+  entityId      String
+  before        Json?
+  after         Json?
+  ipAddress     String?
+
+  createdAt DateTime @default(now())
+
+  actor User? @relation(fields: [actorUserId], references: [id], onDelete: SetNull)
+
+  @@index([entityType, entityId])
+  @@index([actorUserId, createdAt])
+  @@index([createdAt])
+  @@map("audit_logs")
+}

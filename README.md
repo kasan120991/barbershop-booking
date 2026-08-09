@@ -39,6 +39,14 @@ pnpm db:seed                         # shop settings, services, demo barbers
 pnpm dev                             # server + app + booking
 ```
 
+To run the database-backed tests, create the separate test database once:
+
+```bash
+/Applications/MAMP/Library/bin/mysql80/bin/mysql -h 127.0.0.1 -P 8889 -uroot -proot \
+  -e "CREATE DATABASE IF NOT EXISTS francis_cutz_test CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci;"
+pnpm --filter @francis/server db:test:setup
+```
+
 | App | URL |
 |---|---|
 | Staff app | http://localhost:3000 |
