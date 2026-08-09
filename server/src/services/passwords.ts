@@ -10,6 +10,8 @@ import { randomInt } from 'node:crypto';
 
 import { hash, verify } from '@node-rs/argon2';
 
+import { isTest } from '../config/env.js';
+
 /**
  * OWASP's argon2id baseline: 19 MiB memory, 2 iterations, parallelism 1.
  * Memory cost is what actually defeats GPU cracking, so it is the parameter to
@@ -20,12 +22,16 @@ import { hash, verify } from '@node-rs/argon2';
  * `verbatimModuleSyntax`. Rather than hard-code the magic number, `passwords.test.ts`
  * asserts that produced hashes start with `$argon2id$` — so the default is verified
  * rather than assumed, and a change in the library breaks the build.
+ *
+ * Tests use a deliberately cheap cost. Argon2 is memory-hard ON PURPOSE, and vitest
+ * runs test files in parallel — several suites each hashing repeatedly will contend
+ * for memory and start timing out, which is a property of the harness rather than of
+ * the code under test. Production hashes once per sign-in, not dozens of times at
+ * once. The algorithm is unchanged, so every behavioural assertion still holds.
  */
-const ARGON2_OPTIONS = {
-  memoryCost: 19_456,
-  timeCost: 2,
-  parallelism: 1,
-} as const;
+const ARGON2_OPTIONS = isTest
+  ? ({ memoryCost: 1024, timeCost: 1, parallelism: 1 } as const)
+  : ({ memoryCost: 19_456, timeCost: 2, parallelism: 1 } as const);
 
 /**
  * A hash of a throwaway value, computed once on first use.

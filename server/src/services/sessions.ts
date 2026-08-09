@@ -10,6 +10,7 @@
  * and never persisted anywhere.
  */
 
+import { isTest } from '../config/env.js';
 import { generateToken, hashToken } from '../lib/tokens.js';
 import { prisma } from '../lib/prisma.js';
 import type { Role } from '../generated/prisma/enums.js';
@@ -95,8 +96,15 @@ export async function resolveSession(rawToken: string): Promise<ResolvedSession 
 /**
  * Best-effort activity stamp. Never awaited on the request path — a failed write
  * here must not fail an otherwise good request.
+ *
+ * Skipped under test: because it is deliberately not awaited, the UPDATE can still be
+ * in flight when the next test's cleanup DELETEs the same rows, and InnoDB resolves
+ * that collision by killing one of them as a deadlock. It stamps a column nothing
+ * asserts, so running it during tests buys nothing and costs intermittent failures in
+ * whichever file happened to be next.
  */
 export function touchSession(sessionId: string): void {
+  if (isTest) return;
   void prisma.session
     .update({ where: { id: sessionId }, data: { lastSeenAt: new Date() } })
     .catch(() => undefined);

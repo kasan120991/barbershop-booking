@@ -197,8 +197,15 @@ Recomputed on every queue or appointment mutation, then broadcast.
   `errorHandler`, and Express 5 forwards async rejections there. That keeps the parsed value typed
   instead of arriving as `any` on a request property.
 - Database-backed tests share one database, so **scope every `deleteMany`/`updateMany` in a test to
-  that file's own fixtures**. Each test file owns an email domain (`@auth.test`, `@devices.test`);
-  an unscoped write will silently break whatever file vitest runs in parallel with it.
+  that file's own fixtures**. Each test file owns an email domain (`@auth.test`, `@devices.test`,
+  `@catalog.test`). Equally, **never assert on a global list by index** — `barbers[0]` is whatever
+  another file happened to create; find your own fixture by name.
+- **Server tests run serially** (`fileParallelism: false`). Scoped filters stop files seeing each
+  other's *data* but cannot stop InnoDB lock contention on shared indexes, which surfaces as
+  "Transaction failed due to a write conflict or a deadlock" in whichever file lost the race.
+- **Fire-and-forget writes are skipped under test** (`touchSession`, `touchDevice`). Un-awaited by
+  design, they can still be in flight when the next test deletes the row. Argon2 also runs at a
+  reduced cost in tests — memory-hard by design, and repeated hashing starves a parallel suite.
 - Prisma models `PascalCase` singular; enum values `SCREAMING_SNAKE_CASE`.
 - API routes are `/api/<resource>` in plural kebab-case.
 - Vue components `PascalCase`; composables `useThing()`.

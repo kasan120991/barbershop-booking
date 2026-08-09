@@ -11,6 +11,7 @@
  * an admin revokes it.
  */
 
+import { isTest } from '../config/env.js';
 import type { DeviceType } from '../generated/prisma/enums.js';
 import { ConflictError, NotFoundError } from '../lib/errors.js';
 import { prisma } from '../lib/prisma.js';
@@ -131,8 +132,15 @@ export async function resolveDeviceToken(rawToken: string): Promise<ResolvedDevi
   return { deviceId: device.id, label: device.label, type: device.type };
 }
 
-/** Best-effort activity stamp; never blocks the request path. */
+/**
+ * Best-effort activity stamp; never blocks the request path.
+ *
+ * Skipped under test for the same reason as `touchSession`: an un-awaited UPDATE can
+ * still be running when the next test deletes the row, which InnoDB resolves as a
+ * deadlock. Nothing asserts `lastSeenAt`.
+ */
 export function touchDevice(deviceId: string): void {
+  if (isTest) return;
   void prisma.device
     .update({ where: { id: deviceId }, data: { lastSeenAt: new Date() } })
     .catch(() => undefined);

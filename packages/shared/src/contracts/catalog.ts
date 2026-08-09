@@ -13,6 +13,12 @@
 import { z } from 'zod';
 
 import { BARBER_STATUS } from '../enums.js';
+import { LOCAL_DATE_PATTERN, MINUTES_IN_DAY } from '../time.js';
+
+/** A haircut is not an eight-hour job; the cap catches a stray extra digit. */
+const MAX_SERVICE_MINUTES = 480;
+/** $10,000 for a haircut is a typo, not a price. */
+const MAX_SERVICE_CENTS = 1_000_000;
 
 export const serviceDtoSchema = z.object({
   id: z.string(),
@@ -83,3 +89,119 @@ export const shopSettingsDtoSchema = z.object({
   hours: z.array(shopHoursDtoSchema),
 });
 export type ShopSettingsDto = z.infer<typeof shopSettingsDtoSchema>;
+
+// --- Writes ------------------------------------------------------------------
+
+/**
+ * Money crosses the wire as INTEGER CENTS, never dollars.
+ *
+ * The admin types "45.00"; the form converts with `parseDollarsToCents` before it
+ * gets here. Accepting a float would put a rounding decision in the transport layer,
+ * which is the last place anyone would look for one.
+ */
+const priceCentsSchema = z
+  .int({ error: 'Enter a price.' })
+  .nonnegative({ error: 'A price cannot be negative.' })
+  .max(MAX_SERVICE_CENTS, { error: 'That price looks like a typo.' });
+
+const durationMinutesSchema = z
+  .int({ error: 'Enter a duration in minutes.' })
+  .positive({ error: 'A service must take at least a minute.' })
+  .max(MAX_SERVICE_MINUTES, { error: `Keep it under ${MAX_SERVICE_MINUTES} minutes.` });
+
+export const createServiceRequestSchema = z.object({
+  name: z.string().trim().min(1, { error: 'Give the service a name.' }).max(80),
+  description: z.string().trim().max(500).nullish(),
+  category: z.string().trim().max(40).nullish(),
+  priceCents: priceCentsSchema,
+  durationMinutes: durationMinutesSchema,
+  sortOrder: z.int().min(0).max(999).default(0),
+  bookableOnline: z.boolean().default(true),
+  bookableWalkIn: z.boolean().default(true),
+});
+export type CreateServiceRequest = z.infer<typeof createServiceRequestSchema>;
+
+/** Every field optional — a PATCH that only changes the price sends only the price. */
+export const updateServiceRequestSchema = z.object({
+  name: z.string().trim().min(1).max(80).optional(),
+  description: z.string().trim().max(500).nullish(),
+  category: z.string().trim().max(40).nullish(),
+  priceCents: priceCentsSchema.optional(),
+  durationMinutes: durationMinutesSchema.optional(),
+  sortOrder: z.int().min(0).max(999).optional(),
+  isActive: z.boolean().optional(),
+  bookableOnline: z.boolean().optional(),
+  bookableWalkIn: z.boolean().optional(),
+});
+export type UpdateServiceRequest = z.infer<typeof updateServiceRequestSchema>;
+
+/** The full set, not a delta — the server replaces the assignments wholesale. */
+export const setServiceBarbersRequestSchema = z.object({
+  barberIds: z.array(z.string()),
+});
+export type SetServiceBarbersRequest = z.infer<typeof setServiceBarbersRequestSchema>;
+
+export const updateShopSettingsRequestSchema = z.object({
+  name: z.string().trim().min(1).max(80).optional(),
+  /** IANA zone name. Validated against the runtime's own zone list server-side. */
+  timezone: z.string().trim().min(1).optional(),
+  phone: z.string().trim().max(30).nullish(),
+  slotGranularityMinutes: z.int().min(5).max(120).optional(),
+  bookingHorizonDays: z.int().min(1).max(365).optional(),
+  minimumNoticeMinutes: z.int().min(0).max(MINUTES_IN_DAY * 7).optional(),
+  walkInQueueEnabled: z.boolean().optional(),
+  onlineBookingEnabled: z.boolean().optional(),
+});
+export type UpdateShopSettingsRequest = z.infer<typeof updateShopSettingsRequestSchema>;
+
+const shopHoursRowSchema = z
+  .object({
+    dayOfWeek: z.int().min(0).max(6),
+    /** Minutes from LOCAL midnight, so DST cannot shift opening time. */
+    openMinute: z.int().min(0).max(MINUTES_IN_DAY),
+    closeMinute: z.int().min(0).max(MINUTES_IN_DAY),
+    isClosed: z.boolean(),
+  })
+  .refine((row) => row.isClosed || row.closeMinute > row.openMinute, {
+    error: 'Closing time must be after opening time.',
+    path: ['closeMinute'],
+  });
+
+/**
+ * The whole week at once, not one day at a time.
+ *
+ * Applied in a single transaction, so there is no window where the shop is half
+ * open — and no way to leave a day silently missing.
+ */
+export const replaceShopHoursRequestSchema = z.object({
+  hours: z.array(shopHoursRowSchema).length(7, { error: 'Send all seven days.' }),
+});
+export type ReplaceShopHoursRequest = z.infer<typeof replaceShopHoursRequestSchema>;
+
+export const shopClosureDtoSchema = z.object({
+  id: z.string(),
+  /** Local calendar dates in the shop's timezone — the UTC instants stay server-side. */
+  startDate: z.string(),
+  endDate: z.string(),
+  reason: z.string().nullable(),
+});
+export type ShopClosureDto = z.infer<typeof shopClosureDtoSchema>;
+
+/**
+ * Dates, not instants.
+ *
+ * "Closed on Christmas Day" is a statement about the shop's calendar, not about UTC.
+ * The server resolves these against `ShopSettings.timezone`, which keeps timezone
+ * arithmetic in exactly one place instead of in every client.
+ */
+export const createClosureRequestSchema = z
+  .object({
+    startDate: z.string().regex(LOCAL_DATE_PATTERN, { error: 'Use YYYY-MM-DD.' }),
+    endDate: z.string().regex(LOCAL_DATE_PATTERN, { error: 'Use YYYY-MM-DD.' }),
+    reason: z.string().trim().max(120).nullish(),
+  })
+  .refine((value) => value.endDate >= value.startDate, {
+    error: 'The end date cannot be before the start date.',
+    path: ['endDate'],
+  });
+export type CreateClosureRequest = z.infer<typeof createClosureRequestSchema>;

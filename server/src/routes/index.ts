@@ -1,6 +1,7 @@
 import { Router } from 'express';
 
 import { authRouter } from './auth.js';
+import { catalogRouter } from './catalog.js';
 import { deviceRouter } from './devices.js';
 import { healthRouter } from './health.js';
 import { staffRouter } from './staff.js';
@@ -12,3 +13,4 @@ apiRouter.use(healthRouter);
 apiRouter.use(authRouter);
 apiRouter.use(deviceRouter);
 apiRouter.use(staffRouter);
+apiRouter.use(catalogRouter);
