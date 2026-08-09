@@ -398,6 +398,18 @@ async function onSwitchMode(next: 'shop' | 'chair') {
   background: var(--fc-surface);
 }
 
+/* The only way to reach navigation on a narrow screen, and a touch target — it needs
+   to be findable at arm's length on the counter tablet, and big enough to hit. */
+.mobile-bar .chev {
+  width: 1.375rem;
+  height: 1.375rem;
+}
+
+.mobile-bar button {
+  min-width: 44px;
+  min-height: 44px;
+}
+
 .topstrip {
   display: flex;
   align-items: center;
@@ -418,14 +430,22 @@ async function onSwitchMode(next: 'shop' | 'chair') {
   display: grid;
   place-items: center;
   flex: none;
-  width: 2rem;
-  height: 2rem;
+  width: 2.125rem;
+  height: 2.125rem;
   background: none;
   border: 1px solid transparent;
   border-radius: 5px;
   color: var(--fc-ink-faint);
   cursor: pointer;
   transition: color 120ms ease, background-color 120ms ease;
+}
+
+/* `.chev` is sized for icons sitting inline with small text. This one stands alone
+   beside a 17px title, so at that size it read as an afterthought — and was smaller
+   than the nav icons it controls. */
+.collapse .chev {
+  width: 1.25rem;
+  height: 1.25rem;
 }
 
 .collapse:hover {
