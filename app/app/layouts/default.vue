@@ -30,6 +30,20 @@ const { mode, canSwitch, setMode, homeRoute } = useShopMode();
 const { items } = useNavigation();
 const { collapsed, toggle: toggleRail } = useRailState();
 
+/**
+ * The shell owns the one queue poll for the whole app.
+ *
+ * It lives here rather than on `/queue` because the count in the rail and the pill
+ * above have to stay honest on every screen — a barber taking a payment still needs to
+ * see the line growing. Phase 7 replaces this single call with a socket subscription
+ * to the `shop` room, and nothing that reads the board has to change.
+ */
+const queue = useQueue();
+queue.poll(15_000);
+// Fetched during SSR as well, so the count is right in the first painted frame rather
+// than appearing a moment after hydration.
+await queue.ensureLoaded();
+
 const drawerOpen = ref(false);
 const signingOut = ref(false);
 const retrying = ref(false);
@@ -182,13 +196,22 @@ async function onSwitchMode(next: 'shop' | 'chair') {
           </div>
         </div>
 
-        <!-- Placement reserved for the live queue count. Deliberately shows no
-             number until the queue phase ships — a fabricated "3 waiting" on a
-             screen barbers trust would be worse than an obvious placeholder. -->
-        <span class="queue-pill" title="Goes live with the walk-in queue">
+        <!-- Live from here on. Reads "Queue is clear" at zero rather than "0 waiting":
+             an empty line is a state worth stating plainly, not a null value. -->
+        <NuxtLink
+          to="/queue"
+          class="queue-pill"
+          :class="{ active: queue.waitingCount.value > 0 }"
+          :title="
+            queue.waitingCount.value > 0 ? 'Go to the walk-in queue' : 'Nobody is waiting'
+          "
+        >
           <i aria-hidden="true" />
-          <span>Queue not live yet</span>
-        </span>
+          <span v-if="queue.waitingCount.value > 0">
+            {{ queue.waitingCount.value }} waiting
+          </span>
+          <span v-else>Queue is clear</span>
+        </NuxtLink>
       </header>
 
       <!-- An outage is not a sign-out. The session is untouched and the user stays
@@ -235,6 +258,9 @@ async function onSwitchMode(next: 'shop' | 'chair') {
     </Drawer>
 
     <Toast position="bottom-right" />
+    <!-- One global confirm host, alongside Toast. `ConfirmationService` is already
+         registered by the PrimeVue module; this is the surface it renders into. -->
+    <ConfirmDialog />
   </div>
 </template>
 
@@ -499,6 +525,33 @@ async function onSwitchMode(next: 'shop' | 'chair') {
   border-radius: 50%;
   background: var(--fc-line);
   flex: none;
+}
+
+.queue-pill {
+  text-decoration: none;
+  transition: color 120ms ease, border-color 120ms ease;
+}
+
+.queue-pill:hover {
+  color: var(--fc-ink-muted);
+  border-color: var(--fc-ink-faint);
+}
+
+.queue-pill:focus-visible {
+  outline: 2px solid var(--fc-accent);
+  outline-offset: 2px;
+}
+
+/* Amber only when there is somebody to see. A pill that is always lit stops being a
+   signal and becomes decoration, and amber has one job in this app. */
+.queue-pill.active {
+  color: var(--fc-accent);
+  border-color: var(--fc-accent);
+  background: var(--fc-accent-wash);
+}
+
+.queue-pill.active i {
+  background: var(--fc-accent);
 }
 
 .offline {

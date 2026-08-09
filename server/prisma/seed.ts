@@ -62,13 +62,18 @@ async function seedShop() {
     { dayOfWeek: 6, openMinute: MINUTES(9), closeMinute: MINUTES(17), isClosed: false },
   ];
 
-  for (const row of hours) {
-    await prisma.shopHours.upsert({
-      where: { dayOfWeek_openMinute: { dayOfWeek: row.dayOfWeek, openMinute: row.openMinute } },
-      update: { closeMinute: row.closeMinute, isClosed: row.isClosed },
-      create: row,
-    });
-  }
+  /**
+   * The week is REPLACED, not upserted row by row.
+   *
+   * The unique key is `(dayOfWeek, openMinute)`, so an upsert keyed on the opening time
+   * cannot update a row whose opening time was changed. Edit Saturday to 08:30 in
+   * Services & Hours, re-seed, and the 09:00 row comes back *beside* the 08:30 one —
+   * the two merge into a single longer day and the shop reads as open half an hour
+   * before anyone said it was. This is the same trap the barber schedules already fell
+   * into, and it is fixed the same way.
+   */
+  await prisma.shopHours.deleteMany({});
+  await prisma.shopHours.createMany({ data: hours });
 }
 
 const SERVICES = [
@@ -266,11 +271,74 @@ async function seedClients() {
   }
 }
 
+/**
+ * A short line at the door, so `/queue` opens with something to read.
+ *
+ * Deliberately mixed: one client who asked for a specific barber and one who did not,
+ * which is the difference the estimator exists to handle. Both are WAITING rather than
+ * mid-cut, because a seeded IN_CHAIR would claim someone sat down at a time that has
+ * already passed by the time anyone looks.
+ *
+ * Replaced rather than added to, so re-seeding does not stack up a queue of ghosts.
+ */
+async function seedQueue(services: { id: string; name: string }[]) {
+  const haircut = services.find((service) => service.name === 'Haircut') ?? services[0];
+  const beard = services.find((service) => service.name.includes('Beard')) ?? services[0];
+  if (!haircut || !beard) return;
+
+  const barbers = await prisma.barber.findMany({
+    where: { acceptsWalkIns: true, status: 'ACTIVE' },
+    orderBy: { sortOrder: 'asc' },
+  });
+  const clients = await prisma.client.findMany({
+    where: { phoneE164: { in: CLIENTS.map((client) => client.phoneE164) } },
+    orderBy: { phoneE164: 'asc' },
+  });
+  if (barbers.length === 0 || clients.length < 2) return;
+
+  await prisma.queueEntryService.deleteMany({
+    where: { queueEntry: { clientId: { in: clients.map((client) => client.id) } } },
+  });
+  await prisma.queueEntry.deleteMany({
+    where: { clientId: { in: clients.map((client) => client.id) } },
+  });
+
+  const now = new Date();
+  const waiting = [
+    // Asked for a specific barber: they wait for that chair however long it takes.
+    { client: clients[0]!, barberId: barbers[0]!.id, picks: [haircut, beard], minutesAgo: 22 },
+    // Happy with anyone: the estimator sends them to whoever frees up first.
+    { client: clients[1]!, barberId: null, picks: [haircut], minutesAgo: 9 },
+  ];
+
+  for (const entry of waiting) {
+    await prisma.queueEntry.create({
+      data: {
+        clientId: entry.client.id,
+        barberId: entry.barberId,
+        source: 'KIOSK',
+        joinedAt: new Date(now.getTime() - entry.minutesAgo * 60_000),
+        durationMinutes: entry.picks.reduce((total, s) => total + s.durationMinutes, 0),
+        priceCentsTotal: entry.picks.reduce((total, s) => total + s.priceCents, 0),
+        services: {
+          create: entry.picks.map((service) => ({
+            serviceId: service.id,
+            priceCents: service.priceCents,
+            durationMinutes: service.durationMinutes,
+            nameSnapshot: service.name,
+          })),
+        },
+      },
+    });
+  }
+}
+
 async function main() {
   await seedShop();
   const services = await seedServices();
   await seedStaff(services.map((s) => s.id));
   await seedClients();
+  await seedQueue(services);
 
   const counts = {
     services: await prisma.service.count(),
@@ -279,6 +347,7 @@ async function main() {
     chairs: await prisma.chair.count(),
     schedules: await prisma.barberSchedule.count(),
     clients: await prisma.client.count(),
+    queueEntries: await prisma.queueEntry.count(),
     rentPlans: await prisma.rentPlan.count(),
   };
 

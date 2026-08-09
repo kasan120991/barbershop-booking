@@ -43,7 +43,14 @@ export type AuditAction =
   | 'schedule_exception.deleted'
   | 'appointment.created'
   | 'appointment.cancelled'
-  | 'appointment.status_changed';
+  | 'appointment.status_changed'
+  | 'queue.joined'
+  | 'queue.called'
+  | 'queue.status_changed'
+  // The two reorders. Any staff member may make them, so the record of who did it
+  // and what it was before is what keeps that accountable.
+  | 'queue.priority_changed'
+  | 'queue.barber_changed';
 
 export interface AuditInput {
   action: AuditAction;

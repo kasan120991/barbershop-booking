@@ -126,6 +126,29 @@ their booked appointments, assigning each waiting entry the first gap that fits 
 produce `estimatedReadyAt`. "Any barber" entries go to whichever eligible barber frees up first.
 Recomputed on every queue or appointment mutation, then broadcast.
 
+Settled while building it:
+
+- **`estimatedReadyAt` is the seat time, not the finish time.** "Ready for you at 2:45" is the
+  number a waiting person wants, and it is what the field name says.
+- **Assignment is a projection, not a claim.** An "anyone" entry shows an estimate against
+  whichever chair frees first, and that moves as the board moves. `callNext` is the only thing
+  that attaches them — which is also why an unclaimed entry blocks nobody's online calendar.
+  Blocking every barber on their behalf would be a guess, and a pessimistic one.
+- **`QueueChairState.freeFrom` is measured before the waiting line is allocated**, so it answers
+  "is this barber available" rather than "when does their line run out". Measure it after and a
+  barber stands idle beside a card reading *free from 1:44*.
+- **The estimator's own input never includes queue time.** It schedules against appointments only;
+  `getAvailability` then subtracts both. That ordering is what keeps it a one-way dependency
+  instead of the queue rescheduling around itself and walking everyone later on every refresh.
+- **A short cut may land in a gap ahead of a longer one already in the line.** Deliberate: the
+  longer cut could not have used that gap and its own time is unchanged.
+- **One active entry per client**, enforced in the service — MySQL cannot express "unique among
+  rows in these three statuses". A kiosk double-tap and a line-jumping re-join are the same two
+  rows.
+- `callNext` is the queue's one real race and takes `SELECT ... FOR UPDATE` on the candidate row,
+  re-checking status inside the lock. `refreshQueueEstimates` sorts its updates by id so two
+  concurrent refreshes take row locks in the same order and cannot deadlock.
+
 ---
 
 ## Realtime
@@ -196,6 +219,14 @@ Recomputed on every queue or appointment mutation, then broadcast.
   `schema.parse(req.body)` — a thrown `ZodError` is already converted to the shared 400 envelope by
   `errorHandler`, and Express 5 forwards async rejections there. That keeps the parsed value typed
   instead of arriving as `any` on a request property.
+- **A seed that upserts on an editable column is not idempotent.** `ShopHours` is keyed
+  `(dayOfWeek, openMinute)`, so re-seeding after someone had changed Saturday's opening time added
+  the old row back *beside* the new one and the shop read as open half an hour early. `ShopHours`
+  and `BarberSchedule` both replace the whole set now. Any seed of a table whose natural key
+  includes a user-editable value must do the same.
+- **Hash test passwords once per file, not per fixture.** argon2 is memory-hard by design, so a
+  `beforeEach` that seeds three accounts is a hundred passes in one file and slows the shared suite
+  for no coverage — `passwords.test.ts` already owns that path.
 - Database-backed tests share one database, so **scope every `deleteMany`/`updateMany` in a test to
   that file's own fixtures**. Each test file owns an email domain (`@auth.test`, `@devices.test`,
   `@catalog.test`). Equally, **never assert on a global list by index** — `barbers[0]` is whatever
@@ -243,7 +274,17 @@ Recomputed on every queue or appointment mutation, then broadcast.
   cannot work either.
 - **Toasts go through `useNotify()`**, not `useToast()` directly, so severity and duration stay
   consistent. `ToastService` and `ConfirmationService` are already registered by
-  `@primevue/nuxt-module` — do not add a plugin for them, it double-registers and warns.
+  `@primevue/nuxt-module` — do not add a plugin for them, it double-registers and warns. The
+  *hosts* still have to be mounted: `<Toast>` and `<ConfirmDialog>` live once in the layout, and
+  without the latter `confirm.require()` silently does nothing.
+- **The queue board is polled from the shell, not the page.** The count in the rail and the top bar
+  has to stay honest on every screen, so `useQueue().poll()` is called once in `layouts/default.vue`
+  and everything else reads the shared state. Phase 7 replaces that one call with a socket
+  subscription. Anything rendered during SSR must also be *fetched* during SSR — the badge showed
+  "Queue is clear" on the server and the real number after hydration, which Vue reports as a
+  mismatch and repairs by re-rendering the subtree.
+- **Queue mutations do not refetch**, unlike every other store here: each one returns the
+  recomputed board, because moving one person renumbers everyone behind them.
 - Icons come from `@primeicons/vue` as per-icon imports (`@primeicons/vue/calendar`), which
   tree-shakes. Nav icons live in the nav model, not in the layout.
 - The staff app is **single-theme dark** on purpose — `.fc-dark` is pinned on `<html>` so the shop

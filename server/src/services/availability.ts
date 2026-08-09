@@ -55,15 +55,20 @@ export interface DatedException {
   endAt: Date;
 }
 
-export interface AvailabilityInput {
+/**
+ * Everything needed to work out when a barber is free — but not how that free time
+ * gets carved into offerable start times.
+ *
+ * Split out because the walk-in queue needs exactly this half and nothing more: the
+ * estimator places a waiting client into a gap, it does not offer them a grid of
+ * choices. One implementation of the schedule algebra serves both, so a rule about
+ * closures or extra hours can never be right in one and wrong in the other.
+ */
+export interface FreeTimeInput {
   /** Local calendar date in the shop's zone, "YYYY-MM-DD". */
   date: string;
   timezone: string;
-  /** Total across every requested service. */
-  durationMinutes: number;
-  slotGranularityMinutes: number;
   bufferMinutes: number;
-  minimumNoticeMinutes: number;
   bookingHorizonDays: number;
   /** Injected so tests are deterministic. */
   now: Date;
@@ -74,10 +79,24 @@ export interface AvailabilityInput {
   shopClosures: Interval[];
   scheduleExceptions: DatedException[];
   /**
-   * Everything already committed on this barber's day — appointments now, and the
-   * live queue from Phase 6. A generic list so the queue plugs in without a redesign.
+   * Everything already committed on this barber's day — booked appointments, plus
+   * the live queue when the caller is offering online slots.
    */
   busy: Interval[];
+}
+
+export interface AvailabilityInput extends FreeTimeInput {
+  /** Total across every requested service. */
+  durationMinutes: number;
+  slotGranularityMinutes: number;
+  minimumNoticeMinutes: number;
+}
+
+export interface FreeTimeResult {
+  /** Free stretches after every rule, ascending. Empty when `reason` is set. */
+  free: Interval[];
+  /** Why there is no free time, so a caller can explain rather than shrug. */
+  reason: string | null;
 }
 
 export interface AvailabilityResult {
@@ -134,7 +153,14 @@ function rulesToIntervals(
     }));
 }
 
-export function computeAvailability(input: AvailabilityInput): AvailabilityResult {
+/**
+ * When is this barber actually free on this date?
+ *
+ * Order matters and is not interchangeable: extra hours are *added* before anything
+ * is subtracted, because they grant time the weekly pattern does not contain; time
+ * off is subtracted after, because it overrides both.
+ */
+export function computeFreeIntervals(input: FreeTimeInput): FreeTimeResult {
   const dayStart = DateTime.fromISO(input.date, { zone: input.timezone }).startOf('day');
   if (!dayStart.isValid) {
     throw new ValidationError('That date could not be understood.');
@@ -145,7 +171,7 @@ export function computeAvailability(input: AvailabilityInput): AvailabilityResul
   // `.weekday` is Monday=1..Sunday=7; the schema is Sunday=0..Saturday=6.
   const dayOfWeek = dayStart.weekday % 7;
 
-  const empty = (reason: string): AvailabilityResult => ({ slots: [], freeIntervals: [], reason });
+  const empty = (reason: string): FreeTimeResult => ({ free: [], reason });
 
   // Beyond the horizon, or in the past — nothing is bookable regardless of hours.
   const horizonEnd = DateTime.fromJSDate(input.now)
@@ -200,8 +226,15 @@ export function computeAvailability(input: AvailabilityInput): AvailabilityResul
   free = subtractIntervals(free, padEnd(input.busy, input.bufferMinutes));
   if (free.length === 0) return empty('Fully booked.');
 
-  // 7. Candidate starts on the granularity grid, anchored to LOCAL midnight so the
-  //    grid lines up with the clock a human reads rather than drifting with UTC.
+  return { free, reason: null };
+}
+
+export function computeAvailability(input: AvailabilityInput): AvailabilityResult {
+  const { free, reason } = computeFreeIntervals(input);
+  if (reason !== null) return { slots: [], freeIntervals: [], reason };
+
+  // Candidate starts on the granularity grid, anchored to LOCAL midnight so the grid
+  // lines up with the clock a human reads rather than drifting with UTC.
   const earliest = new Date(input.now.getTime() + input.minimumNoticeMinutes * 60_000);
   const durationMs = input.durationMinutes * 60_000;
   const slots: Date[] = [];
@@ -236,6 +269,131 @@ export function computeAvailability(input: AvailabilityInput): AvailabilityResul
 
 // --- Loader ------------------------------------------------------------------
 
+/** One barber's day, as the engine wants it. */
+export interface DaySnapshot {
+  barberSchedules: WeeklyRule[];
+  shopHours: ShopHoursRule[];
+  shopClosures: Interval[];
+  scheduleExceptions: DatedException[];
+  /** Booked appointments only — see `loadQueueCommitments` for the walk-in half. */
+  appointments: Interval[];
+}
+
+/** The UTC window covering one local calendar day in the shop's zone. */
+export function localDayWindow(date: string, timezone: string): Interval {
+  const dayStart = DateTime.fromISO(date, { zone: timezone }).startOf('day');
+  if (!dayStart.isValid) throw new ValidationError('That date could not be understood.');
+  return {
+    start: dayStart.toUTC().toJSDate(),
+    end: dayStart.plus({ days: 1 }).toUTC().toJSDate(),
+  };
+}
+
+/**
+ * Loads the same day for several barbers at once.
+ *
+ * Written plural because the queue board needs every chair and the naive shape —
+ * one loader called in a loop — is five queries per barber per refresh, on a screen
+ * that refreshes constantly. Shop-wide rows are fetched once and shared.
+ */
+export async function loadDaySnapshots(
+  barberIds: string[],
+  date: string,
+  timezone: string,
+): Promise<Map<string, DaySnapshot>> {
+  const window = localDayWindow(date, timezone);
+
+  const [schedules, hours, closures, exceptions, appointments] = await Promise.all([
+    prisma.barberSchedule.findMany({ where: { barberId: { in: barberIds } } }),
+    prisma.shopHours.findMany(),
+    prisma.shopClosure.findMany({
+      where: { startAt: { lt: window.end }, endAt: { gt: window.start } },
+    }),
+    prisma.scheduleException.findMany({
+      where: {
+        barberId: { in: barberIds },
+        startAt: { lt: window.end },
+        endAt: { gt: window.start },
+      },
+    }),
+    prisma.appointment.findMany({
+      where: {
+        barberId: { in: barberIds },
+        // CANCELLED and NO_SHOW free the chair; BOOKED and IN_PROGRESS do not.
+        status: { in: ['BOOKED', 'IN_PROGRESS'] },
+        startAt: { lt: window.end },
+        endAt: { gt: window.start },
+      },
+      select: { barberId: true, startAt: true, endAt: true },
+    }),
+  ]);
+
+  const shopClosures = closures.map((closure) => ({ start: closure.startAt, end: closure.endAt }));
+
+  return new Map(
+    barberIds.map((barberId) => [
+      barberId,
+      {
+        barberSchedules: schedules.filter((row) => row.barberId === barberId),
+        shopHours: hours,
+        shopClosures,
+        scheduleExceptions: exceptions.filter((row) => row.barberId === barberId),
+        appointments: appointments
+          .filter((row) => row.barberId === barberId)
+          .map((row) => ({ start: row.startAt, end: row.endAt })),
+      },
+    ]),
+  );
+}
+
+/**
+ * Time already promised to walk-ins, keyed by barber.
+ *
+ * Read from the persisted `estimatedReadyAt` rather than re-run through the estimator,
+ * which is what keeps this free of a cycle: the queue schedules itself against
+ * appointments, then availability schedules around both.
+ *
+ * Only entries attached to a specific barber count. An "anyone" walk-in still waiting
+ * is genuinely not committed to a chair yet — `callNext` is what attaches them — so
+ * blocking every barber's calendar on their behalf would be a guess, and a pessimistic
+ * one that closes the online book for a client who may be seated in five minutes.
+ */
+export async function loadQueueCommitments(
+  barberIds: string[],
+  window: Interval,
+): Promise<Map<string, Interval[]>> {
+  const entries = await prisma.queueEntry.findMany({
+    where: {
+      barberId: { in: barberIds },
+      status: { in: ['WAITING', 'CALLED', 'IN_CHAIR'] },
+    },
+    select: {
+      barberId: true,
+      durationMinutes: true,
+      startedAt: true,
+      calledAt: true,
+      estimatedReadyAt: true,
+    },
+  });
+
+  const byBarber = new Map<string, Interval[]>(barberIds.map((id) => [id, []]));
+
+  for (const entry of entries) {
+    if (entry.barberId === null) continue;
+    // Someone in the chair started when they started; everyone else is where the
+    // estimator last put them. No estimate at all means it cannot be reserved.
+    const start = entry.startedAt ?? entry.estimatedReadyAt ?? entry.calledAt;
+    if (start === null) continue;
+
+    const end = new Date(start.getTime() + entry.durationMinutes * 60_000);
+    if (start >= window.end || end <= window.start) continue;
+
+    byBarber.get(entry.barberId)?.push({ start, end });
+  }
+
+  return byBarber;
+}
+
 export interface AvailabilityQuery {
   barberId: string;
   /** Local date, "YYYY-MM-DD". */
@@ -269,35 +427,21 @@ export async function getAvailability(query: AvailabilityQuery): Promise<Availab
   const durationMinutes = services.reduce((total, service) => total + service.durationMinutes, 0);
   if (durationMinutes <= 0) throw new ValidationError('Choose at least one service.');
 
-  const dayStart = DateTime.fromISO(query.date, { zone: settings.timezone }).startOf('day');
-  if (!dayStart.isValid) throw new ValidationError('That date could not be understood.');
-  const windowStart = dayStart.toUTC().toJSDate();
-  const windowEnd = dayStart.plus({ days: 1 }).toUTC().toJSDate();
+  const window = localDayWindow(query.date, settings.timezone);
+  const snapshots = await loadDaySnapshots([query.barberId], query.date, settings.timezone);
+  const snapshot = snapshots.get(query.barberId);
+  if (!snapshot) throw new NotFoundError('Barber not found.');
 
-  const [schedules, hours, closures, exceptions, appointments] = await Promise.all([
-    prisma.barberSchedule.findMany({ where: { barberId: query.barberId } }),
-    prisma.shopHours.findMany(),
-    prisma.shopClosure.findMany({
-      where: { startAt: { lt: windowEnd }, endAt: { gt: windowStart } },
-    }),
-    prisma.scheduleException.findMany({
-      where: {
-        barberId: query.barberId,
-        startAt: { lt: windowEnd },
-        endAt: { gt: windowStart },
-      },
-    }),
-    prisma.appointment.findMany({
-      where: {
-        barberId: query.barberId,
-        // CANCELLED and NO_SHOW free the chair; BOOKED and IN_PROGRESS do not.
-        status: { in: ['BOOKED', 'IN_PROGRESS'] },
-        startAt: { lt: windowEnd },
-        endAt: { gt: windowStart },
-      },
-      select: { startAt: true, endAt: true },
-    }),
-  ]);
+  /**
+   * The live queue only exists today, so a forward-booking lookup — which is nearly
+   * every lookup — skips the query entirely rather than paying for a table it cannot
+   * have rows in.
+   */
+  const isToday =
+    query.date === DateTime.fromJSDate(now).setZone(settings.timezone).toFormat('yyyy-MM-dd');
+  const queueBusy = isToday
+    ? ((await loadQueueCommitments([query.barberId], window)).get(query.barberId) ?? [])
+    : [];
 
   return computeAvailability({
     date: query.date,
@@ -308,13 +452,11 @@ export async function getAvailability(query: AvailabilityQuery): Promise<Availab
     minimumNoticeMinutes: settings.minimumNoticeMinutes,
     bookingHorizonDays: settings.bookingHorizonDays,
     now,
-    barberSchedules: schedules,
-    shopHours: hours,
-    shopClosures: closures.map((closure) => ({ start: closure.startAt, end: closure.endAt })),
-    scheduleExceptions: exceptions,
-    busy: appointments.map((appointment) => ({
-      start: appointment.startAt,
-      end: appointment.endAt,
-    })),
+    barberSchedules: snapshot.barberSchedules,
+    shopHours: snapshot.shopHours,
+    shopClosures: snapshot.shopClosures,
+    scheduleExceptions: snapshot.scheduleExceptions,
+    // Both halves of "already spoken for": the calendar and the line at the door.
+    busy: [...snapshot.appointments, ...queueBusy],
   });
 }

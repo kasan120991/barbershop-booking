@@ -6,6 +6,7 @@ import { bookingRouter } from './booking.js';
 import { catalogRouter } from './catalog.js';
 import { deviceRouter } from './devices.js';
 import { healthRouter } from './health.js';
+import { queueRouter } from './queue.js';
 import { staffRouter } from './staff.js';
 
 /** Everything mounted under `API_PREFIX`. New resource routers get registered here. */
@@ -18,3 +19,4 @@ apiRouter.use(staffRouter);
 apiRouter.use(catalogRouter);
 apiRouter.use(barberRouter);
 apiRouter.use(bookingRouter);
+apiRouter.use(queueRouter);

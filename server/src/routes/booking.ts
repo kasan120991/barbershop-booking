@@ -18,7 +18,7 @@ import {
   type BookingConfirmationDto,
 } from '@francis/shared';
 import { Router } from 'express';
-import rateLimit from 'express-rate-limit';
+import rateLimit, { ipKeyGenerator } from 'express-rate-limit';
 
 import { isTest } from '../config/env.js';
 import type { AppointmentStatus, Role } from '../generated/prisma/enums.js';
@@ -65,7 +65,9 @@ const bookingPhoneLimit = rateLimit({
     const body = req.body as { phone?: unknown };
     const phone = typeof body?.phone === 'string' ? normalizePhone(body.phone) : null;
     // Falls back to IP when there is no usable number; validation rejects it anyway.
-    return phone ?? `ip:${req.ip ?? 'unknown'}`;
+    // Normalised through `ipKeyGenerator` so an IPv6 client cannot get a fresh bucket
+    // per address in a prefix it owns outright.
+    return phone ?? `ip:${ipKeyGenerator(req.ip ?? 'unknown')}`;
   },
 });
 

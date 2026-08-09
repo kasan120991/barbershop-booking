@@ -22,6 +22,8 @@ const props = withDefaults(
 
 const route = useRoute();
 const { items } = useNavigation();
+// Read only — the shell owns the one poll that keeps this number honest.
+const { waitingCount } = useQueue();
 
 const emit = defineEmits<{ navigate: [] }>();
 </script>
@@ -41,6 +43,16 @@ const emit = defineEmits<{ navigate: [] }>();
     >
       <component :is="item.icon" class="icon" aria-hidden="true" />
       <span v-if="!props.collapsed" class="label">{{ item.label }}</span>
+
+      <!-- Absent at zero rather than showing "0": a badge is a call to act, and an
+           empty queue is not one. Collapsed, it becomes a dot on the icon, because a
+           two-digit number in a 44px rail is unreadable. -->
+      <span
+        v-if="item.showsQueueCount && waitingCount > 0"
+        class="count"
+        :class="{ dot: props.collapsed }"
+        :aria-label="`${waitingCount} waiting`"
+      >{{ props.collapsed ? '' : waitingCount }}</span>
     </NuxtLink>
   </nav>
 </template>
@@ -95,11 +107,40 @@ nav {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  /* Pushes the count to the far edge without a wrapper element. */
+  flex: 1;
+}
+
+.count {
+  flex: none;
+  min-width: 1.25rem;
+  padding: 0 0.375rem;
+  border-radius: 999px;
+  background: var(--fc-accent);
+  color: var(--fc-accent-ink);
+  font-size: 0.6875rem;
+  font-weight: 700;
+  line-height: 1.25rem;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+.count.dot {
+  min-width: 0;
+  width: 0.4375rem;
+  height: 0.4375rem;
+  padding: 0;
+  line-height: 0;
+  /* Overlaps the icon rather than sitting beside it, which the collapsed rail has
+     no room for. */
+  position: absolute;
+  transform: translate(0.5rem, -0.5rem);
 }
 
 nav.is-collapsed .nav-item {
   justify-content: center;
   padding-inline: 0;
+  position: relative;
 }
 
 /* A finger is not a mouse pointer: 44px is the smallest reliably tappable target,
