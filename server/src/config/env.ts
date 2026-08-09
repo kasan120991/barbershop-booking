@@ -25,6 +25,16 @@ const envSchema = z.object({
   APP_ORIGIN: z.url().default('http://localhost:3000'),
   /** Public booking + kiosk origin. */
   BOOKING_ORIGIN: z.url().default('http://localhost:3001'),
+
+  /**
+   * Staff sessions are absolute, not sliding: 12 hours covers a shift, and a device
+   * left on the counter stops being a way in by the next morning.
+   */
+  SESSION_TTL_HOURS: z.coerce.number().int().positive().max(24 * 30).default(12),
+
+  /** Login attempts allowed per IP within the window, before the account lockout can even be reached. */
+  LOGIN_RATE_LIMIT_MAX: z.coerce.number().int().positive().default(20),
+  LOGIN_RATE_LIMIT_WINDOW_MINUTES: z.coerce.number().int().positive().default(15),
 });
 
 export type Env = z.infer<typeof envSchema>;

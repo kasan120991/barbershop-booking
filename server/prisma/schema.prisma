@@ -183,11 +183,20 @@ model ShopClosure {
 model User {
   id           String  @id @default(cuid())
   email        String  @unique
+  /// argon2id. Never leaves the server; no DTO may contain it.
   passwordHash String
   firstName    String
   lastName     String
   phone        String?
   isActive     Boolean @default(true)
+
+  /// Reset to 0 on any successful login.
+  failedLoginAttempts Int       @default(0)
+  /// Non-null means locked out; only an admin can clear it.
+  lockedAt            DateTime? @db.DateTime(3)
+  /// Set by an admin password reset — forces a change before anything else is allowed.
+  mustChangePassword  Boolean   @default(false)
+  lastLoginAt         DateTime? @db.DateTime(3)
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -219,7 +228,11 @@ model UserRole {
 /// same way HTTP middleware does. Only the hash of the token is stored.
 model Session {
   id        String   @id @default(cuid())
+  /// SHA-256 of the session token. The raw token exists only in the client's cookie.
   tokenHash String   @unique
+  /// SHA-256 of the CSRF token. Binding it to the session is what makes double-submit
+  /// meaningful — a token merely present in a cookie proves nothing about origin.
+  csrfTokenHash String
   userId    String
   expiresAt DateTime @db.DateTime(3)
   userAgent String?  @db.Text
@@ -237,11 +250,23 @@ model Session {
 
 /// A paired kiosk tablet or wall display. Narrow scope by design: it can join the
 /// queue and read the board, and nothing else.
+///
+/// Lifecycle: an admin creates the row with a short-lived pairing code and no token.
+/// The tablet redeems the code once, which clears the code and sets `tokenHash`.
+/// The token never expires — an admin revokes it instead.
 model Device {
   id         String     @id @default(cuid())
   label      String
   type       DeviceType @default(KIOSK)
-  tokenHash  String     @unique
+  /// Null until the device is paired. SHA-256 of the device token.
+  tokenHash  String?    @unique
+
+  /// SHA-256 of the pairing code. Cleared on redemption, which is what makes it single-use.
+  pairingCodeHash      String?   @unique
+  pairingCodeExpiresAt DateTime? @db.DateTime(3)
+  pairedAt             DateTime? @db.DateTime(3)
+  createdByUserId      String?
+
   lastSeenAt DateTime?  @db.DateTime(3)
   revokedAt  DateTime?  @db.DateTime(3)
   createdAt  DateTime   @default(now())

@@ -159,12 +159,28 @@ Recomputed on every queue or appointment mutation, then broadcast.
 
 ## Auth & security
 
-- **Staff:** email + password hash → DB-backed `Session` in an httpOnly, SameSite=Lax, Secure
-  cookie. CSRF token on mutations. Barbers may only read/write their own appointments, payments,
-  payouts, and rent.
-- **Kiosk:** admin issues a pairing code; the device exchanges it for a long-lived device token.
+- **Staff:** email + argon2id password → DB-backed `Session` in an httpOnly, SameSite=Lax, Secure
+  cookie (`fc_session`). Sessions are **12 hours absolute, never sliding**. Barbers may only
+  read/write their own appointments, payments, payouts, and rent — use `requireBarberSelfOrAdmin`.
+- **CSRF:** double-submit, bound to the session row. `fc_csrf` is deliberately *not* httpOnly; the
+  client echoes it back as `x-csrf-token` and it is compared against `Session.csrfTokenHash`.
+  Comparing against the cookie alone would prove nothing. Required on every non-GET with a session.
+- **Two principals, one union.** `req.auth` is `{ kind: 'user', ... } | { kind: 'device', ... }`.
+  Keep it a discriminated union — a device has no `roles`, so `requireRole(ADMIN)` can never be
+  satisfied by a kiosk, and the compiler enforces that rather than a runtime check.
+- **Hashing:** argon2id for passwords (low entropy, needs to be slow); **SHA-256** for session,
+  CSRF, and device tokens and pairing codes (256-bit random, nothing to brute-force — argon2 there
+  would add ~100 ms per request for nothing).
+- **Kiosk:** admin issues a pairing code; the device exchanges it once for a device token sent as
+  `x-device-token`. The token never expires — an admin revokes it, which clears the token outright.
   Narrow scope — join queue, read the board. It cannot read client history, list phone numbers, or
-  take payment.
+  take payment. Device requests are CSRF-exempt: a header credential cannot be forged cross-site.
+- **Lockout:** 10 failed logins locks the account until an admin unlocks it, and locking revokes
+  existing sessions. Login also sits behind an IP throttle. Failed logins must return an identical
+  response for a wrong password and an unknown email, and must burn equivalent CPU (see
+  `getDummyPasswordHash`) or the form becomes a staff-directory oracle.
+- **Password reset** is admin-only and in person — v1 has no email or SMS. It returns a temporary
+  password once, forces a change at next login, and revokes all sessions.
 - **Public booking:** unauthenticated, rate-limited by IP **and** by phone number.
 - **Because phones are unverified,** `/me` requires phone **plus** matching first name and returns
   only upcoming appointments — never history, never notes, never the full name. Cancellation links
@@ -176,7 +192,13 @@ Recomputed on every queue or appointment mutation, then broadcast.
 ## Conventions
 
 - TypeScript everywhere, `strict` on, all packages extend `tsconfig.base.json`.
-- Validate every request body, query, and param with a zod schema from `shared`.
+- Validate every request body, query, and param with a zod schema from `shared`. Parse inline with
+  `schema.parse(req.body)` — a thrown `ZodError` is already converted to the shared 400 envelope by
+  `errorHandler`, and Express 5 forwards async rejections there. That keeps the parsed value typed
+  instead of arriving as `any` on a request property.
+- Database-backed tests share one database, so **scope every `deleteMany`/`updateMany` in a test to
+  that file's own fixtures**. Each test file owns an email domain (`@auth.test`, `@devices.test`);
+  an unscoped write will silently break whatever file vitest runs in parallel with it.
 - Prisma models `PascalCase` singular; enum values `SCREAMING_SNAKE_CASE`.
 - API routes are `/api/<resource>` in plural kebab-case.
 - Vue components `PascalCase`; composables `useThing()`.

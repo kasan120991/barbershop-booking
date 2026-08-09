@@ -14,6 +14,7 @@ import 'dotenv/config';
 
 import { parseDatabaseUrl } from '../src/config/database.js';
 import { PrismaClient } from '../src/generated/prisma/client.js';
+import { hashPassword } from '../src/services/passwords.js';
 
 const DATABASE_URL = process.env['DATABASE_URL'];
 if (!DATABASE_URL) {
@@ -24,8 +25,14 @@ if (!DATABASE_URL) {
 const adapter = new PrismaMariaDb({ ...parseDatabaseUrl(DATABASE_URL), timezone: 'Z' });
 const prisma = new PrismaClient({ adapter });
 
-/** Placeholder — replaced with a real argon2 hash in the auth phase. */
-const DEV_PASSWORD_HASH = 'dev-only-not-a-real-hash';
+/**
+ * Development-only password, shared by every seeded account.
+ *
+ * Safe to keep in the repo precisely because it is only ever written to a local
+ * development database by this script. It must never be used to seed production —
+ * production accounts get created by an admin with a real password.
+ */
+const DEV_PASSWORD = 'FrancisCutz!2026';
 
 const MINUTES = (hours: number, minutes = 0) => hours * 60 + minutes;
 
@@ -147,13 +154,25 @@ const STAFF = [
 ];
 
 async function seedStaff(serviceIds: string[]) {
+  // Hashed once rather than per user — argon2 is deliberately slow.
+  const devPasswordHash = await hashPassword(DEV_PASSWORD);
+
   for (const person of STAFF) {
     const user = await prisma.user.upsert({
       where: { email: person.email },
-      update: { firstName: person.firstName, lastName: person.lastName },
+      // Re-running the seed resets the dev password and clears any lockout hit while
+      // testing, which is exactly what you want from a dev seed.
+      update: {
+        firstName: person.firstName,
+        lastName: person.lastName,
+        passwordHash: devPasswordHash,
+        failedLoginAttempts: 0,
+        lockedAt: null,
+        mustChangePassword: false,
+      },
       create: {
         email: person.email,
-        passwordHash: DEV_PASSWORD_HASH,
+        passwordHash: devPasswordHash,
         firstName: person.firstName,
         lastName: person.lastName,
       },
@@ -264,6 +283,11 @@ async function main() {
   };
 
   console.log('Seed complete:', counts);
+  console.log('\nDevelopment sign-in:');
+  for (const person of STAFF) {
+    console.log(`  ${person.email.padEnd(28)} ${person.roles.join(', ')}`);
+  }
+  console.log(`  password: ${DEV_PASSWORD}   (development only)\n`);
 }
 
 main()

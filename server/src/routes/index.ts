@@ -1,8 +1,14 @@
 import { Router } from 'express';
 
+import { authRouter } from './auth.js';
+import { deviceRouter } from './devices.js';
 import { healthRouter } from './health.js';
+import { staffRouter } from './staff.js';
 
 /** Everything mounted under `API_PREFIX`. New resource routers get registered here. */
 export const apiRouter: Router = Router();
 
 apiRouter.use(healthRouter);
+apiRouter.use(authRouter);
+apiRouter.use(deviceRouter);
+apiRouter.use(staffRouter);

@@ -8,3 +8,18 @@ export const API_PREFIX = '/api';
 
 /** Request bodies are small (a booking, a payment). A low cap is a cheap DoS guard. */
 export const JSON_BODY_LIMIT = '100kb';
+
+/** httpOnly — JavaScript must never be able to read the session token. */
+export const SESSION_COOKIE = 'fc_session';
+
+/** Readable by JavaScript on purpose: the client echoes it back as a header. */
+export const CSRF_COOKIE = 'fc_csrf';
+
+export const CSRF_HEADER = 'x-csrf-token';
+
+/**
+ * Kiosk devices authenticate with a header rather than a cookie. That is what makes
+ * them immune to CSRF: a cross-site form can make the browser attach a cookie, but it
+ * cannot make it attach a custom header.
+ */
+export const DEVICE_TOKEN_HEADER = 'x-device-token';
