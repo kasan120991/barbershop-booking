@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { formatPhone, isE164, normalizePhone, redactPhone } from './phone.js';
+import { formatPhone, isE164, nationalDigits, normalizePhone, redactPhone } from './phone.js';
 
 describe('normalizePhone', () => {
   it('collapses every way a human types the same US number into one identity', () => {
@@ -82,6 +82,39 @@ describe('formatPhone', () => {
 
   it('passes non-US numbers through untouched rather than mangling them', () => {
     expect(formatPhone('+442071838750')).toBe('+442071838750');
+  });
+});
+
+describe('nationalDigits', () => {
+  /**
+   * The failure this exists to prevent: a `(999) 999-9999` mask fills left to right,
+   * so handing it a stored E.164 value directly shifts every digit by the country code
+   * and the next save writes the wrong number back.
+   */
+  it('strips the country code so a mask is not seeded one digit out', () => {
+    expect(nationalDigits('+14155550123')).toBe('4155550123');
+    // What the mask would have produced from the raw value, for contrast.
+    expect('+14155550123'.replace(/\D/g, '').slice(0, 10)).toBe('1415555012');
+  });
+
+  it('takes anything a human might have typed, since old rows were free text', () => {
+    for (const input of ['4155550123', '(415) 555-0123', '415.555.0123', '1-415-555-0123']) {
+      expect(nationalDigits(input), input).toBe('4155550123');
+    }
+  });
+
+  it('gives an empty field rather than a plausible wrong one', () => {
+    expect(nationalDigits('')).toBe('');
+    expect(nationalDigits(null)).toBe('');
+    expect(nationalDigits(undefined)).toBe('');
+    expect(nationalDigits('not a phone number')).toBe('');
+    expect(nationalDigits('415555')).toBe('');
+  });
+
+  it('refuses international numbers, which a ten-digit mask cannot hold', () => {
+    // `normalizePhone` accepts this one; the mask still has nowhere to put it.
+    expect(normalizePhone('+442071838750')).toBe('+442071838750');
+    expect(nationalDigits('+442071838750')).toBe('');
   });
 });
 

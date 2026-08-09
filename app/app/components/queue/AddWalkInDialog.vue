@@ -157,10 +157,23 @@ async function onAdd() {
 
       <div class="field">
         <label for="w-phone" class="fc-label">Phone</label>
-        <InputText
+        <!--
+          `auto-clear` off and `unmask` on, and both matter.
+
+          The default clears a half-typed number the moment the field loses focus —
+          somebody glances at the service list and comes back to an empty box with no
+          explanation. And `unmask` puts ten digits in the model rather than the
+          punctuation, so what the form holds is data; formatting is a display decision
+          made once, in `formatPhone`.
+        -->
+        <InputMask
           id="w-phone"
           v-model="form.phone"
+          mask="(999) 999-9999"
+          :auto-clear="false"
+          unmask
           type="tel"
+          inputmode="tel"
           placeholder="(415) 555-0123"
           :invalid="Boolean(fieldErrors.phone)"
           fluid

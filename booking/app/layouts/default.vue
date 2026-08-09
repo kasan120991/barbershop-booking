@@ -18,7 +18,7 @@ import Clock from '@primeicons/vue/clock';
 import Calendar from '@primeicons/vue/calendar';
 import User from '@primeicons/vue/user';
 
-import { formatCents } from '@francis/shared';
+import { formatCents, formatPhone } from '@francis/shared';
 
 const booking = useBooking();
 const route = useRoute();
@@ -125,7 +125,7 @@ const shopPhone = computed(() => booking.settings.value?.phone ?? null);
         <ClientOnly>
           <p v-if="shopPhone" class="call">
             Rather talk to someone?
-            <a :href="`tel:${shopPhone}`" class="fcb-num">{{ shopPhone }}</a>
+            <a :href="`tel:${shopPhone}`" class="fcb-num">{{ formatPhone(shopPhone) }}</a>
           </p>
         </ClientOnly>
         <p class="walkin">Walk-ins welcome — no appointment needed.</p>

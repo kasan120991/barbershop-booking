@@ -382,10 +382,18 @@ const myEntry = computed(
 
     <div class="field">
       <label for="k-phone" class="fcb-label">Mobile number</label>
-      <InputText
+      <!--
+        `auto-clear` off matters more here than anywhere: on a tablet somebody types
+        half a number, taps a service to check the price, and the default would wipe
+        the field while they were looking away. `unmask` keeps the model to ten digits.
+      -->
+      <InputMask
         id="k-phone"
         v-model="form.phone"
         class="big fcb-num"
+        mask="(999) 999-9999"
+        :auto-clear="false"
+        unmask
         type="tel"
         inputmode="tel"
         autocomplete="off"

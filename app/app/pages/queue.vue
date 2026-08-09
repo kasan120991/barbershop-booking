@@ -20,7 +20,7 @@
  */
 
 import EllipsisIcon from '@primeicons/vue/ellipsis-v';
-import { formatCents, type QueueEntryDto } from '@francis/shared';
+import { formatCents, formatPhone, type QueueEntryDto } from '@francis/shared';
 
 useHead({ title: 'Walk-in Queue — Francis Cutz' });
 
@@ -321,7 +321,11 @@ function openMenu(event: Event, entry: QueueEntryDto) {
 
         <span class="cell">
           <span class="name">{{ entry.clientName }}</span>
-          <a class="phone" :href="`tel:${entry.clientPhone}`">{{ entry.clientPhone }}</a>
+          <!-- The href keeps E.164, which is what a dialler wants; only the text is
+               formatted, because nobody reads a number back as +14155550123. -->
+          <a class="phone" :href="`tel:${entry.clientPhone}`">
+            {{ formatPhone(entry.clientPhone) }}
+          </a>
         </span>
 
         <span class="cell">

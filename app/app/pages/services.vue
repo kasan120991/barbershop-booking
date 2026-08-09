@@ -7,7 +7,14 @@
  * editing a service in one tab cannot leave another showing a stale roster.
  */
 
-import { dayName, formatCents, minutesToTimeString, timeStringToMinutes } from '@francis/shared';
+import {
+  dayName,
+  formatCents,
+  minutesToTimeString,
+  nationalDigits,
+  normalizePhone,
+  timeStringToMinutes,
+} from '@francis/shared';
 
 import type { ServiceWithBarbers } from '../composables/useCatalog';
 
@@ -150,7 +157,9 @@ watchEffect(() => {
   Object.assign(shopForm, {
     name: settings.name,
     timezone: settings.timezone,
-    phone: settings.phone ?? '',
+    // The ten national digits, NOT the stored value. A mask fills left to right, so
+    // handing it "+14155550134" would show "(141) 555-5013" and save that back.
+    phone: nationalDigits(settings.phone),
     slotGranularityMinutes: settings.slotGranularityMinutes,
     bookingHorizonDays: settings.bookingHorizonDays,
     minimumNoticeMinutes: settings.minimumNoticeMinutes,
@@ -162,7 +171,9 @@ watchEffect(() => {
 async function onSaveSettings() {
   savingSettings.value = true;
   try {
-    await catalog.updateSettings({ ...shopForm, phone: shopForm.phone.trim() || null });
+    // Normalised on the way out, so the shop's own number is stored the same way every
+    // client's is — and so the `tel:` links on the booking site actually dial.
+    await catalog.updateSettings({ ...shopForm, phone: normalizePhone(shopForm.phone) });
     notifySuccess('Shop settings saved');
   } catch (error) {
     notifyApiFailure(error);
@@ -373,7 +384,18 @@ async function onDeleteClosure(closureId: string) {
 
               <div class="field">
                 <label for="shop-phone" class="fc-label">Phone</label>
-                <InputText id="shop-phone" v-model="shopForm.phone" fluid />
+                <InputMask
+                  id="shop-phone"
+                  v-model="shopForm.phone"
+                  mask="(999) 999-9999"
+                  :auto-clear="false"
+                  unmask
+                  type="tel"
+                  inputmode="tel"
+                  placeholder="(415) 555-0123"
+                  fluid
+                />
+                <p class="hint">Shown to clients on the booking site, and dialable from it.</p>
               </div>
 
               <div class="field">

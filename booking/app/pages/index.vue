@@ -19,7 +19,12 @@
 import AngleLeft from '@primeicons/vue/angle-left';
 import ClockIcon from '@primeicons/vue/clock';
 import Sparkles from '@primeicons/vue/sparkles';
-import { formatCents, type BookingConfirmationDto } from '@francis/shared';
+import {
+  formatCents,
+  formatPhone,
+  normalizePhone,
+  type BookingConfirmationDto,
+} from '@francis/shared';
 
 import type { Slot, StepIndex } from '../composables/useBooking';
 
@@ -179,11 +184,32 @@ async function confirm(): Promise<void> {
   }
 }
 
+/**
+ * Ten DIGITS, not ten characters.
+ *
+ * This counted characters before the field was masked, so `(415) 555-` — a number
+ * somebody was halfway through typing — satisfied it. The mask now hands over bare
+ * digits, which makes the count correct by construction; stating it as digits keeps it
+ * that way if the field ever changes again.
+ */
 const detailsValid = computed(
   () =>
     booking.details.value.firstName.trim().length > 0 &&
-    booking.details.value.phone.trim().length >= 10,
+    booking.details.value.phone.replace(/\D/g, '').length === 10,
 );
+
+/**
+ * The number as a person would write it.
+ *
+ * The field now holds bare digits, so the review step would otherwise read
+ * "4155550123" back to somebody checking their own number — which is exactly the moment
+ * it needs to be easy to scan. Falls back to the raw value if it is not a number the
+ * shop can dial, so nothing disappears from a screen asking "does this look right?".
+ */
+const typedPhone = computed(() => {
+  const e164 = normalizePhone(booking.details.value.phone);
+  return e164 === null ? booking.details.value.phone : formatPhone(e164);
+});
 
 function back(): void {
   booking.goTo(Math.max(1, booking.step.value - 1) as StepIndex);
@@ -410,9 +436,14 @@ function back(): void {
 
             <div class="field">
               <label for="b-phone" class="fcb-label">Mobile number</label>
-              <InputText
+              <!-- `auto-clear` off so a half-typed number survives a glance away, and
+                   `unmask` on so the model holds ten digits rather than punctuation. -->
+              <InputMask
                 id="b-phone"
                 v-model="booking.details.value.phone"
+                mask="(999) 999-9999"
+                :auto-clear="false"
+                unmask
                 type="tel"
                 inputmode="tel"
                 autocomplete="tel"
@@ -478,7 +509,7 @@ function back(): void {
             </div>
             <div class="review-row">
               <span class="k">Mobile</span>
-              <span class="v fcb-num">{{ booking.details.value.phone }}</span>
+              <span class="v fcb-num">{{ typedPhone }}</span>
             </div>
             <div class="review-row total">
               <span class="k">Total, paid in the shop</span>

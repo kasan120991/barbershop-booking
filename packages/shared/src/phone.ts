@@ -58,6 +58,25 @@ export function formatPhone(e164: string): string {
 }
 
 /**
+ * The ten national digits, for seeding a `(999) 999-9999` input mask.
+ *
+ * A mask fills left to right from whatever it is handed, so feeding it a stored E.164
+ * value directly is silently wrong: `+14155550134` becomes `(141) 555-5013` and the
+ * next save writes that back. Anything the mask is initialised with has to have the
+ * country code taken off first, and this is the only correct way to do it — via
+ * `normalizePhone`, so a value that was never a real number seeds an empty field rather
+ * than a plausible-looking wrong one.
+ *
+ * Returns '' for anything non-NANP, including the international numbers `normalizePhone`
+ * itself accepts: a ten-digit mask has nowhere to put them.
+ */
+export function nationalDigits(input: string | null | undefined): string {
+  const e164 = normalizePhone(input);
+  if (e164 === null || !e164.startsWith('+1') || e164.length !== 12) return '';
+  return e164.slice(2);
+}
+
+/**
  * "(•••) •••-4567" — last four only.
  *
  * Required anywhere a screen faces the shop floor. See `privacy.ts` for the

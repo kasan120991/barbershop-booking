@@ -13,7 +13,7 @@
  * left to do.
  */
 
-import { formatCents, type BookingConfirmationDto } from '@francis/shared';
+import { formatCents, formatPhone, type BookingConfirmationDto } from '@francis/shared';
 
 const route = useRoute();
 const api = useApi();
@@ -118,7 +118,7 @@ async function cancel(): Promise<void> {
         <Message v-if="refusal" severity="warn" :closable="false">
           {{ refusal }}
           <template v-if="shopPhone">
-            <a :href="`tel:${shopPhone}`" class="fcb-num call">{{ shopPhone }}</a>
+            <a :href="`tel:${shopPhone}`" class="fcb-num call">{{ formatPhone(shopPhone) }}</a>
           </template>
         </Message>
 

@@ -335,6 +335,16 @@ Settled while building it:
 - **Both apps pin their scheme and neither reads `prefers-color-scheme`.** The staff app pins
   dark so a shop tablet cannot flip; the booking site pins light so a customer's OS setting
   cannot restyle a page the shop designed. Same reasoning, opposite direction.
+- **Every phone input is an `InputMask`** with `mask="(999) 999-9999"`, `:auto-clear="false"` and
+  `unmask`. All three matter: the default `autoClear` wipes a half-typed number the moment the
+  field loses focus, which on the kiosk means somebody glances at the service list and comes back
+  to an empty box; and `unmask` keeps the model to ten digits, so what a form holds is data and
+  formatting is a display decision made once. Display goes through `formatPhone`; a `tel:` href
+  keeps E.164, because that is what a dialler wants.
+- **Anything seeding a phone mask from stored data goes through `nationalDigits`.** A mask fills
+  left to right, so handing it `+14155550134` renders `(141) 555-5013` and saves that back. Only
+  the shop's own number in Services & Hours hydrates from storage today, and it is stored E.164
+  like every other phone.
 - **Native `<input type="date">`/`type="time"` use the shared `.fc-input` class** — never a local
   copy. It derives padding, radius, font size and height from PrimeVue's own `--p-form-field-*`
   tokens, so a native input matches a `Select` by construction. This existed as four hand-tuned
