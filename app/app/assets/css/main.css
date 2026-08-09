@@ -1,0 +1,106 @@
+/**
+ * App-level tokens and resets.
+ *
+ * This is the ONE place raw colour literals live outside the PrimeVue preset.
+ * Components reference the custom properties, never the hex values, so a palette
+ * change stays a two-file edit.
+ *
+ * The app is deliberately single-theme: the shop tablet must not flip to light mode
+ * because someone changed an iPad setting, so there is no prefers-color-scheme
+ * block and `.fc-dark` is pinned on <html> in nuxt.config.
+ */
+
+:root {
+  --fc-ground: #17171b;
+  --fc-surface: #1e1e23;
+  --fc-input: #26262c;
+  --fc-line: #33333a;
+  --fc-line-soft: #26262c;
+
+  --fc-ink: #f4f2ee;
+  --fc-ink-muted: #a39d93;
+  --fc-ink-faint: #6f6a63;
+
+  --fc-accent: #d4a24c;
+  --fc-accent-ink: #1a1408;
+  --fc-accent-wash: rgba(212, 162, 76, 0.05);
+  --fc-accent-glow: rgba(212, 162, 76, 0.16);
+
+  /* Reserved for failure states only — never decorative. */
+  --fc-danger: #d2645c;
+  --fc-danger-ink: #eab8b3;
+  --fc-danger-bg: rgba(210, 100, 92, 0.09);
+  --fc-danger-line: rgba(210, 100, 92, 0.4);
+
+  --fc-font-display: ui-sans-serif, 'Helvetica Neue', Helvetica, Arial, sans-serif;
+  --fc-font-body: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif;
+
+  color-scheme: dark;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#__nuxt {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--fc-ground);
+  color: var(--fc-ink);
+  font-family: var(--fc-font-body);
+  font-size: 0.9375rem;
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* The wordmark, used in both the login pane and the signed-in shell. */
+.fc-wordmark {
+  margin: 0;
+  font-family: var(--fc-font-display);
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.2em;
+  font-size: 0.8125rem;
+  color: var(--fc-ink);
+}
+
+/**
+ * The barber-pole stripe. Carried over from the approved mockup — it is the one
+ * piece of decoration in the design, so it is defined once and reused rather than
+ * being redrawn per screen.
+ */
+.fc-pole {
+  width: 0.5rem;
+  height: 1.5rem;
+  border-radius: 1px;
+  flex: none;
+  background: repeating-linear-gradient(
+    -45deg,
+    var(--fc-accent) 0 3px,
+    var(--fc-ground) 3px 6px
+  );
+}
+
+/* Uppercase micro-label used above form fields and in data headers. */
+.fc-label {
+  display: block;
+  font-size: 0.6875rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--fc-ink-faint);
+  margin-bottom: 0.4375rem;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+  }
+}

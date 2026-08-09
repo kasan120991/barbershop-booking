@@ -1,0 +1,7 @@
+{
+  // Nuxt generates the real config (including srcDir-aware paths) into .nuxt.
+  // Extending it rather than tsconfig.base.json keeps auto-imports and module
+  // augmentation working; the workspace's strict settings arrive via nuxt.config's
+  // `typescript.strict`.
+  "extends": "./.nuxt/tsconfig.json"
+}

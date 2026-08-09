@@ -203,7 +203,14 @@ Recomputed on every queue or appointment mutation, then broadcast.
 - API routes are `/api/<resource>` in plural kebab-case.
 - Vue components `PascalCase`; composables `useThing()`.
 - Prefer PrimeVue components over hand-rolled UI. **Use the `primevue` MCP** to check component
-  APIs rather than guessing — PrimeVue 5 differs from v3/v4 in props and theming.
+  APIs rather than guessing — PrimeVue 5 differs from v3/v4 in props and theming. `validate_usage`
+  confirms a prop still exists before you write the markup.
+- **Colour lives in exactly two files**: `app/app/theme/preset.ts` (PrimeVue tokens) and
+  `app/app/assets/css/main.css` (app tokens). Components reference custom properties, never hex.
+- The staff app is **single-theme dark** on purpose — `.fc-dark` is pinned on `<html>` so the shop
+  tablet cannot flip to light mode because someone changed an iPad setting.
+- Semantic red is reserved for failure states and is never decorative. The brand accent is amber
+  precisely so red keeps meaning exactly one thing.
 - Tests: vitest. Required for `availability`, `booking`, and `queue`; optional elsewhere.
 
 ## Commands
@@ -244,6 +251,17 @@ is unreachable, so the suite still passes without MAMP running.
   `DATABASE_URL` into them.
 - **`STORED` is a reserved word in MySQL 8** (generated columns). It cannot be a bare column alias
   in raw SQL.
+- **PrimeVue 5 needs a licence key.** v4 was MIT; v5 is dual Community/Commercial. The shop
+  qualifies for the free Community tier, but the key must be set as `NUXT_PUBLIC_PRIMEUI_LICENSE`
+  or PrimeVue may render a licence notice — unacceptable on the customer-facing kiosk. Without a
+  key it currently logs a console warning only.
+- **SSR auth needs the cookie forwarded AND scoped.** `useApi` copies the incoming `cookie` header
+  onto server-side fetches; in production `COOKIE_DOMAIN` must be the shared parent domain or the
+  app origin never receives the cookie and SSR auth fails in prod while working in dev.
+- **The CSRF token must be re-read from the `fc_csrf` cookie after a reload.** A fresh Pinia store
+  has no token and `/auth/me` does not re-issue one, so every mutation 403s. This bites hardest on
+  sign-out, which swallows its own errors — the UI returns to the login page looking successful
+  while the server session stays valid.
 
 ## Build phases
 

@@ -32,6 +32,17 @@ const envSchema = z.object({
    */
   SESSION_TTL_HOURS: z.coerce.number().int().positive().max(24 * 30).default(12),
 
+  /**
+   * Cookie scope. Leave UNSET in development: localhost cookies ignore ports, so a
+   * host-only cookie is already shared between the app on :3000 and the API on :4000.
+   *
+   * In production the app and API live on different subdomains, and a host-only
+   * cookie set by api.example.com is never sent to app.example.com — which means
+   * Nuxt's server has nothing to forward and SSR auth fails while working perfectly
+   * in dev. Set this to the shared parent (".example.com") to fix that.
+   */
+  COOKIE_DOMAIN: z.string().min(1).optional(),
+
   /** Login attempts allowed per IP within the window, before the account lockout can even be reached. */
   LOGIN_RATE_LIMIT_MAX: z.coerce.number().int().positive().default(20),
   LOGIN_RATE_LIMIT_WINDOW_MINUTES: z.coerce.number().int().positive().default(15),

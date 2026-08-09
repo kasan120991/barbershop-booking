@@ -1,0 +1,28 @@
+{
+  "name": "@francis/app",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Francis Cutz staff app — admin and barber, authenticated",
+  "scripts": {
+    "dev": "nuxt dev --port 3000",
+    "build": "nuxt build",
+    "preview": "nuxt preview",
+    "postinstall": "nuxt prepare",
+    "typecheck": "nuxt typecheck"
+  },
+  "dependencies": {
+    "@francis/shared": "workspace:*",
+    "@pinia/nuxt": "1.0.1",
+    "@primeuix/themes": "3.0.0",
+    "nuxt": "4.5.2",
+    "pinia": "4.0.2",
+    "primevue": "5.0.0",
+    "vue": "3.5.41"
+  },
+  "devDependencies": {
+    "@primevue/nuxt-module": "5.0.0",
+    "typescript": "5.9.3",
+    "vue-tsc": "3.3.9"
+  }
+}

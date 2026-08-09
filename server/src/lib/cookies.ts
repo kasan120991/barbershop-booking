@@ -17,7 +17,7 @@
 import type { CookieOptions, Response } from 'express';
 
 import { CSRF_COOKIE, SESSION_COOKIE } from '../config/constants.js';
-import { isProduction } from '../config/env.js';
+import { env, isProduction } from '../config/env.js';
 
 function baseCookieOptions(expiresAt: Date): CookieOptions {
   return {
@@ -28,6 +28,10 @@ function baseCookieOptions(expiresAt: Date): CookieOptions {
     secure: isProduction,
     path: '/',
     expires: expiresAt,
+    // Unset in development (host-only is correct when ports share a host). In
+    // production this must be the parent domain, or the staff app's SSR pass never
+    // receives the cookie and cannot forward it to the API. See config/env.ts.
+    ...(env.COOKIE_DOMAIN === undefined ? {} : { domain: env.COOKIE_DOMAIN }),
   };
 }
 
@@ -52,7 +56,12 @@ export function setSessionCookies(
  * everywhere except where it counts.
  */
 export function clearSessionCookies(res: Response): void {
-  const options: CookieOptions = { sameSite: 'lax', secure: isProduction, path: '/' };
+  const options: CookieOptions = {
+    sameSite: 'lax',
+    secure: isProduction,
+    path: '/',
+    ...(env.COOKIE_DOMAIN === undefined ? {} : { domain: env.COOKIE_DOMAIN }),
+  };
   res.clearCookie(SESSION_COOKIE, { ...options, httpOnly: true });
   res.clearCookie(CSRF_COOKIE, { ...options, httpOnly: false });
 }
