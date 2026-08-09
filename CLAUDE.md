@@ -277,12 +277,20 @@ Settled while building it:
   `@primevue/nuxt-module` — do not add a plugin for them, it double-registers and warns. The
   *hosts* still have to be mounted: `<Toast>` and `<ConfirmDialog>` live once in the layout, and
   without the latter `confirm.require()` silently does nothing.
+- **Never put a top-level `await` in a layout.** A page may be async — it sits inside Suspense and
+  `calendar.vue` and `queue.vue` both do it — but awaiting in `layouts/default.vue` makes the whole
+  shell an async component, and the `useTemplateRef` further down its setup then runs with no
+  instance context and throws `Attempting to define property on object that is not extensible`.
+  Every route 500s, and the reported error names an unrelated binding (`auth.displayName`), so the
+  message points nowhere near the cause. Fetch in the page, or render client-side.
 - **The queue board is polled from the shell, not the page.** The count in the rail and the top bar
   has to stay honest on every screen, so `useQueue().poll()` is called once in `layouts/default.vue`
   and everything else reads the shared state. Phase 7 replaces that one call with a socket
-  subscription. Anything rendered during SSR must also be *fetched* during SSR — the badge showed
-  "Queue is clear" on the server and the real number after hydration, which Vue reports as a
-  mismatch and repairs by re-rendering the subtree.
+  subscription.
+- **Both live counts render inside `<ClientOnly>`**, with the empty state as the fallback so the
+  pill holds its space. Not a shortcut around a hydration warning: the `/queue` page's own SSR
+  fetch populates the shared state *after* the layout template has already rendered, so a
+  server-rendered count genuinely disagrees with the payload the client hydrates from.
 - **Queue mutations do not refetch**, unlike every other store here: each one returns the
   recomputed board, because moving one person renumbers everyone behind them.
 - Icons come from `@primeicons/vue` as per-icon imports (`@primeicons/vue/calendar`), which

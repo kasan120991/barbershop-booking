@@ -46,13 +46,18 @@ const emit = defineEmits<{ navigate: [] }>();
 
       <!-- Absent at zero rather than showing "0": a badge is a call to act, and an
            empty queue is not one. Collapsed, it becomes a dot on the icon, because a
-           two-digit number in a 44px rail is unreadable. -->
-      <span
-        v-if="item.showsQueueCount && waitingCount > 0"
-        class="count"
-        :class="{ dot: props.collapsed }"
-        :aria-label="`${waitingCount} waiting`"
-      >{{ props.collapsed ? '' : waitingCount }}</span>
+           two-digit number in a 44px rail is unreadable.
+
+           Client-only because the board can be fetched by the page *after* this has
+           rendered on the server, which would hydrate to a different number. -->
+      <ClientOnly>
+        <span
+          v-if="item.showsQueueCount && waitingCount > 0"
+          class="count"
+          :class="{ dot: props.collapsed }"
+          :aria-label="`${waitingCount} waiting`"
+        >{{ props.collapsed ? '' : waitingCount }}</span>
+      </ClientOnly>
     </NuxtLink>
   </nav>
 </template>

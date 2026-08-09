@@ -37,12 +37,16 @@ const { collapsed, toggle: toggleRail } = useRailState();
  * above have to stay honest on every screen — a barber taking a payment still needs to
  * see the line growing. Phase 7 replaces this single call with a socket subscription
  * to the `shop` room, and nothing that reads the board has to change.
+ *
+ * Deliberately NOT awaited. A top-level `await` here makes the whole layout an async
+ * component, and `useTemplateRef` below then runs without an instance context and
+ * throws — taking the entire shell down with it. The live count is rendered inside
+ * `<ClientOnly>` instead, which is also what keeps the server and the client agreeing
+ * on it: the page's own SSR fetch can populate the board *after* this template has
+ * already rendered, so a server-rendered count would hydrate to a different number.
  */
 const queue = useQueue();
 queue.poll(15_000);
-// Fetched during SSR as well, so the count is right in the first painted frame rather
-// than appearing a moment after hydration.
-await queue.ensureLoaded();
 
 const drawerOpen = ref(false);
 const signingOut = ref(false);
@@ -197,21 +201,34 @@ async function onSwitchMode(next: 'shop' | 'chair') {
         </div>
 
         <!-- Live from here on. Reads "Queue is clear" at zero rather than "0 waiting":
-             an empty line is a state worth stating plainly, not a null value. -->
-        <NuxtLink
-          to="/queue"
-          class="queue-pill"
-          :class="{ active: queue.waitingCount.value > 0 }"
-          :title="
-            queue.waitingCount.value > 0 ? 'Go to the walk-in queue' : 'Nobody is waiting'
-          "
-        >
-          <i aria-hidden="true" />
-          <span v-if="queue.waitingCount.value > 0">
-            {{ queue.waitingCount.value }} waiting
-          </span>
-          <span v-else>Queue is clear</span>
-        </NuxtLink>
+             an empty line is a state worth stating plainly, not a null value.
+
+             Client-only, with the empty state as the fallback so the pill occupies its
+             space from the first frame and the number fills in rather than the layout
+             jumping. -->
+        <ClientOnly>
+          <NuxtLink
+            to="/queue"
+            class="queue-pill"
+            :class="{ active: queue.waitingCount.value > 0 }"
+            :title="
+              queue.waitingCount.value > 0 ? 'Go to the walk-in queue' : 'Nobody is waiting'
+            "
+          >
+            <i aria-hidden="true" />
+            <span v-if="queue.waitingCount.value > 0">
+              {{ queue.waitingCount.value }} waiting
+            </span>
+            <span v-else>Queue is clear</span>
+          </NuxtLink>
+
+          <template #fallback>
+            <span class="queue-pill">
+              <i aria-hidden="true" />
+              <span>Queue is clear</span>
+            </span>
+          </template>
+        </ClientOnly>
       </header>
 
       <!-- An outage is not a sign-out. The session is untouched and the user stays

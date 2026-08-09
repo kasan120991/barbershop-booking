@@ -51,10 +51,10 @@ export function useQueue() {
   /**
    * Loads the board if nothing has yet.
    *
-   * Called during SSR by the shell, so the count in the rail and the pill are right in
-   * the first painted frame. Without it the server renders "Queue is clear", the client
-   * hydrates with the real number, and Vue reports a text mismatch — which is not
-   * cosmetic: hydration mismatches make Vue discard and re-render the subtree.
+   * For the `/queue` page's own SSR fetch. It must NOT be awaited from the layout: a
+   * top-level `await` turns the shell into an async component and the `useTemplateRef`
+   * further down its setup then runs with no instance context and throws, which takes
+   * the whole page with it. The live counts render inside `<ClientOnly>` instead.
    */
   async function ensureLoaded(): Promise<void> {
     if (board.value === null) await refresh({ quiet: true });
