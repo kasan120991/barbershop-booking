@@ -16,6 +16,20 @@ import { hashPassword } from '../services/passwords.js';
 
 const app = createApp();
 
+/**
+ * One listening server for the whole file.
+ *
+ * `request(app)` starts an ephemeral server and closes it again for EVERY request.
+ * That churn is what produced the intermittent "socket hang up" and "Parse Error:
+ * Expected HTTP/" failures — a client socket outliving the server it was talking to.
+ * They landed in whichever file happened to be running, which is why they read as
+ * database contention for two phases. Binding once removes the whole class.
+ */
+const server = app.listen(0);
+afterAll(() => {
+  server.close();
+});
+
 const PASSWORD = 'FrancisCutz!2026';
 const ADMIN_EMAIL = 'admin@devices.test';
 
@@ -41,7 +55,7 @@ async function reseed() {
 }
 
 async function adminSession() {
-  const response = await request(app)
+  const response = await request(server)
     .post('/api/auth/login')
     .send({ email: ADMIN_EMAIL, password: PASSWORD })
     .expect(200);
@@ -54,7 +68,7 @@ async function adminSession() {
 
 async function createDevice(label = 'DEVTEST Front counter', type = 'KIOSK') {
   const admin = await adminSession();
-  const response = await request(app)
+  const response = await request(server)
     .post('/api/devices')
     .set('Cookie', admin.cookies)
     .set(CSRF_HEADER, admin.csrfToken)
@@ -89,7 +103,7 @@ describe.skipIf(!reachable)('device pairing', () => {
   it('redeems a code for a device token', async () => {
     const { pairingCode, deviceId } = await createDevice();
 
-    const response = await request(app)
+    const response = await request(server)
       .post('/api/devices/pair')
       .send({ pairingCode })
       .expect(200);
@@ -105,7 +119,7 @@ describe.skipIf(!reachable)('device pairing', () => {
 
   it('accepts the code without its separator', async () => {
     const { pairingCode } = await createDevice();
-    await request(app)
+    await request(server)
       .post('/api/devices/pair')
       .send({ pairingCode: pairingCode.replace('-', '') })
       .expect(200);
@@ -114,9 +128,9 @@ describe.skipIf(!reachable)('device pairing', () => {
   it('refuses to redeem the same code twice', async () => {
     const { pairingCode } = await createDevice();
 
-    await request(app).post('/api/devices/pair').send({ pairingCode }).expect(200);
+    await request(server).post('/api/devices/pair').send({ pairingCode }).expect(200);
 
-    const second = await request(app).post('/api/devices/pair').send({ pairingCode }).expect(404);
+    const second = await request(server).post('/api/devices/pair').send({ pairingCode }).expect(404);
     expect(second.body.error.code).toBe('NOT_FOUND');
   });
 
@@ -128,7 +142,7 @@ describe.skipIf(!reachable)('device pairing', () => {
       data: { pairingCodeExpiresAt: new Date(Date.now() - 1000) },
     });
 
-    const response = await request(app)
+    const response = await request(server)
       .post('/api/devices/pair')
       .send({ pairingCode })
       .expect(409);
@@ -136,11 +150,11 @@ describe.skipIf(!reachable)('device pairing', () => {
   });
 
   it('rejects an unknown code', async () => {
-    await request(app).post('/api/devices/pair').send({ pairingCode: '0000-0000' }).expect(404);
+    await request(server).post('/api/devices/pair').send({ pairingCode: '0000-0000' }).expect(404);
   });
 
   it('requires admin to create a device', async () => {
-    await request(app).post('/api/devices').send({ label: 'DEVTEST x', type: 'KIOSK' }).expect(401);
+    await request(server).post('/api/devices').send({ label: 'DEVTEST x', type: 'KIOSK' }).expect(401);
   });
 });
 
@@ -149,11 +163,11 @@ describe.skipIf(!reachable)('device token scope', () => {
 
   it('authenticates the device but cannot reach an admin route', async () => {
     const { pairingCode } = await createDevice();
-    const paired = await request(app).post('/api/devices/pair').send({ pairingCode }).expect(200);
+    const paired = await request(server).post('/api/devices/pair').send({ pairingCode }).expect(200);
 
     // The kiosk is authenticated — but a device principal has no roles, so it can
     // never satisfy requireRole(ADMIN). This is the property the union type enforces.
-    const response = await request(app)
+    const response = await request(server)
       .get('/api/devices')
       .set(DEVICE_TOKEN_HEADER, paired.body.deviceToken)
       .expect(401);
@@ -163,9 +177,9 @@ describe.skipIf(!reachable)('device token scope', () => {
 
   it('stops working once revoked', async () => {
     const { pairingCode, deviceId, admin } = await createDevice();
-    const paired = await request(app).post('/api/devices/pair').send({ pairingCode }).expect(200);
+    const paired = await request(server).post('/api/devices/pair').send({ pairingCode }).expect(200);
 
-    await request(app)
+    await request(server)
       .post(`/api/devices/${deviceId}/revoke`)
       .set('Cookie', admin.cookies)
       .set(CSRF_HEADER, admin.csrfToken)
@@ -176,7 +190,7 @@ describe.skipIf(!reachable)('device token scope', () => {
     expect(device?.tokenHash).toBeNull();
     expect(device?.revokedAt).not.toBeNull();
 
-    await request(app)
+    await request(server)
       .get('/api/auth/me')
       .set(DEVICE_TOKEN_HEADER, paired.body.deviceToken)
       .expect(401);
@@ -184,11 +198,11 @@ describe.skipIf(!reachable)('device token scope', () => {
 
   it('is exempt from CSRF, having no ambient cookie credential', async () => {
     const { pairingCode } = await createDevice();
-    const paired = await request(app).post('/api/devices/pair').send({ pairingCode }).expect(200);
+    const paired = await request(server).post('/api/devices/pair').send({ pairingCode }).expect(200);
 
     // A device POST with no CSRF header must not be rejected for CSRF. It gets 401
     // here only because /devices is admin-only — which is the point of the check.
-    const response = await request(app)
+    const response = await request(server)
       .post('/api/devices')
       .set(DEVICE_TOKEN_HEADER, paired.body.deviceToken)
       .send({ label: 'DEVTEST nope', type: 'KIOSK' });
@@ -203,9 +217,9 @@ describe.skipIf(!reachable)('device DTO', () => {
 
   it('never exposes a token or pairing hash to the admin list', async () => {
     const { pairingCode, admin } = await createDevice();
-    await request(app).post('/api/devices/pair').send({ pairingCode }).expect(200);
+    await request(server).post('/api/devices/pair').send({ pairingCode }).expect(200);
 
-    const response = await request(app).get('/api/devices').set('Cookie', admin.cookies).expect(200);
+    const response = await request(server).get('/api/devices').set('Cookie', admin.cookies).expect(200);
 
     const serialized = JSON.stringify(response.body);
     expect(serialized).not.toContain('tokenHash');

@@ -14,6 +14,20 @@ import { hashPassword } from '../services/passwords.js';
 
 const app = createApp();
 
+/**
+ * One listening server for the whole file.
+ *
+ * `request(app)` starts an ephemeral server and closes it again for EVERY request.
+ * That churn is what produced the intermittent "socket hang up" and "Parse Error:
+ * Expected HTTP/" failures — a client socket outliving the server it was talking to.
+ * They landed in whichever file happened to be running, which is why they read as
+ * database contention for two phases. Binding once removes the whole class.
+ */
+const server = app.listen(0);
+afterAll(() => {
+  server.close();
+});
+
 const PASSWORD = 'FrancisCutz!2026';
 const ADMIN_EMAIL = 'admin@schedule.test';
 const BARBER_EMAIL = 'barber@schedule.test';
@@ -74,7 +88,7 @@ async function reseed() {
 }
 
 async function signIn(email: string) {
-  const response = await request(app)
+  const response = await request(server)
     .post('/api/auth/login')
     .send({ email, password: PASSWORD })
     .expect(200);
@@ -108,7 +122,7 @@ describe.skipIf(!reachable)('barber onboarding', () => {
   it('creates the user, roles and profile together, with a working temporary password', async () => {
     const admin = await signIn(ADMIN_EMAIL);
 
-    const response = await request(app)
+    const response = await request(server)
       .post('/api/barbers')
       .set('Cookie', admin.cookies)
       .set(CSRF_HEADER, admin.csrfToken)
@@ -136,7 +150,7 @@ describe.skipIf(!reachable)('barber onboarding', () => {
     expect(user?.mustChangePassword).toBe(true);
 
     // And the password actually works.
-    await request(app)
+    await request(server)
       .post('/api/auth/login')
       .send({ email: 'marcus@schedule.test', password: response.body.barber.temporaryPassword })
       .expect(200);
@@ -144,7 +158,7 @@ describe.skipIf(!reachable)('barber onboarding', () => {
 
   it('can also grant admin, for an owner who cuts hair', async () => {
     const admin = await signIn(ADMIN_EMAIL);
-    const response = await request(app)
+    const response = await request(server)
       .post('/api/barbers')
       .set('Cookie', admin.cookies)
       .set(CSRF_HEADER, admin.csrfToken)
@@ -161,7 +175,7 @@ describe.skipIf(!reachable)('barber onboarding', () => {
 
   it('refuses a duplicate email with a 409, not a constraint error', async () => {
     const admin = await signIn(ADMIN_EMAIL);
-    const response = await request(app)
+    const response = await request(server)
       .post('/api/barbers')
       .set('Cookie', admin.cookies)
       .set(CSRF_HEADER, admin.csrfToken)
@@ -174,7 +188,7 @@ describe.skipIf(!reachable)('barber onboarding', () => {
 
   it('never puts the temporary password in the audit log', async () => {
     const admin = await signIn(ADMIN_EMAIL);
-    const response = await request(app)
+    const response = await request(server)
       .post('/api/barbers')
       .set('Cookie', admin.cookies)
       .set(CSRF_HEADER, admin.csrfToken)
@@ -196,7 +210,7 @@ describe.skipIf(!reachable)('weekly schedule', () => {
     const admin = await signIn(ADMIN_EMAIL);
     const barberId = await barberIdFor(BARBER_EMAIL);
 
-    const response = await request(app)
+    const response = await request(server)
       .put(`/api/barbers/${barberId}/schedule`)
       .set('Cookie', admin.cookies)
       .set(CSRF_HEADER, admin.csrfToken)
@@ -212,9 +226,9 @@ describe.skipIf(!reachable)('weekly schedule', () => {
     const barberId = await barberIdFor(BARBER_EMAIL);
     const headers = { Cookie: admin.cookies, [CSRF_HEADER]: admin.csrfToken };
 
-    await request(app).put(`/api/barbers/${barberId}/schedule`).set(headers).send({ shifts: SPLIT_WEEK }).expect(200);
+    await request(server).put(`/api/barbers/${barberId}/schedule`).set(headers).send({ shifts: SPLIT_WEEK }).expect(200);
 
-    const second = await request(app)
+    const second = await request(server)
       .put(`/api/barbers/${barberId}/schedule`)
       .set(headers)
       .send({ shifts: [{ dayOfWeek: 5, startMinute: 540, endMinute: 1020 }] })
@@ -230,9 +244,9 @@ describe.skipIf(!reachable)('weekly schedule', () => {
     const barberId = await barberIdFor(BARBER_EMAIL);
     const headers = { Cookie: admin.cookies, [CSRF_HEADER]: admin.csrfToken };
 
-    await request(app).put(`/api/barbers/${barberId}/schedule`).set(headers).send({ shifts: SPLIT_WEEK }).expect(200);
+    await request(server).put(`/api/barbers/${barberId}/schedule`).set(headers).send({ shifts: SPLIT_WEEK }).expect(200);
 
-    const response = await request(app)
+    const response = await request(server)
       .put(`/api/barbers/${barberId}/schedule`)
       .set(headers)
       .send({
@@ -254,7 +268,7 @@ describe.skipIf(!reachable)('weekly schedule', () => {
     const admin = await signIn(ADMIN_EMAIL);
     const barberId = await barberIdFor(BARBER_EMAIL);
 
-    const response = await request(app)
+    const response = await request(server)
       .put(`/api/barbers/${barberId}/schedule`)
       .set('Cookie', admin.cookies)
       .set(CSRF_HEADER, admin.csrfToken)
@@ -273,7 +287,7 @@ describe.skipIf(!reachable)('time off', () => {
     const admin = await signIn(ADMIN_EMAIL);
     const barberId = await barberIdFor(BARBER_EMAIL);
 
-    const response = await request(app)
+    const response = await request(server)
       .post(`/api/barbers/${barberId}/exceptions`)
       .set('Cookie', admin.cookies)
       .set(CSRF_HEADER, admin.csrfToken)
@@ -299,7 +313,7 @@ describe.skipIf(!reachable)('time off', () => {
     const admin = await signIn(ADMIN_EMAIL);
     const barberId = await barberIdFor(BARBER_EMAIL);
 
-    const response = await request(app)
+    const response = await request(server)
       .post(`/api/barbers/${barberId}/exceptions`)
       .set('Cookie', admin.cookies)
       .set(CSRF_HEADER, admin.csrfToken)
@@ -316,7 +330,7 @@ describe.skipIf(!reachable)('time off', () => {
     const admin = await signIn(ADMIN_EMAIL);
     const barberId = await barberIdFor(BARBER_EMAIL);
 
-    const response = await request(app)
+    const response = await request(server)
       .post(`/api/barbers/${barberId}/exceptions`)
       .set('Cookie', admin.cookies)
       .set(CSRF_HEADER, admin.csrfToken)
@@ -346,7 +360,7 @@ describe.skipIf(!reachable)('time off', () => {
     const admin = await signIn(ADMIN_EMAIL);
     const barberId = await barberIdFor(BARBER_EMAIL);
 
-    const response = await request(app)
+    const response = await request(server)
       .post(`/api/barbers/${barberId}/exceptions`)
       .set('Cookie', admin.cookies)
       .set(CSRF_HEADER, admin.csrfToken)
@@ -371,13 +385,13 @@ describe.skipIf(!reachable)('time off', () => {
     const barberId = await barberIdFor(BARBER_EMAIL);
     const headers = { Cookie: admin.cookies, [CSRF_HEADER]: admin.csrfToken };
 
-    await request(app)
+    await request(server)
       .post(`/api/barbers/${barberId}/exceptions`)
       .set(headers)
       .send({ kind: 'EXTRA_HOURS', startDate: '2027-01-24', allDay: true })
       .expect(400);
 
-    await request(app)
+    await request(server)
       .post(`/api/barbers/${barberId}/exceptions`)
       .set(headers)
       .send({ kind: 'TIME_OFF', startDate: '2027-01-24', allDay: false })
@@ -389,13 +403,13 @@ describe.skipIf(!reachable)('time off', () => {
     const barberId = await barberIdFor(BARBER_EMAIL);
     const headers = { Cookie: admin.cookies, [CSRF_HEADER]: admin.csrfToken };
 
-    const created = await request(app)
+    const created = await request(server)
       .post(`/api/barbers/${barberId}/exceptions`)
       .set(headers)
       .send({ kind: 'TIME_OFF', startDate: '2027-03-01', allDay: true })
       .expect(201);
 
-    await request(app)
+    await request(server)
       .delete(`/api/schedule-exceptions/${created.body.exception.id}`)
       .set(headers)
       .expect(204);
@@ -413,15 +427,15 @@ describe.skipIf(!reachable)('authorization', () => {
     const barber = await signIn(BARBER_EMAIL);
     const ownId = await barberIdFor(BARBER_EMAIL);
 
-    await request(app).get(`/api/barbers/${ownId}/schedule`).set('Cookie', barber.cookies).expect(200);
-    await request(app).get(`/api/barbers/${ownId}/exceptions`).set('Cookie', barber.cookies).expect(200);
+    await request(server).get(`/api/barbers/${ownId}/schedule`).set('Cookie', barber.cookies).expect(200);
+    await request(server).get(`/api/barbers/${ownId}/exceptions`).set('Cookie', barber.cookies).expect(200);
   });
 
   it("refuses a barber another barber's schedule", async () => {
     const barber = await signIn(BARBER_EMAIL);
     const otherId = await barberIdFor(OTHER_EMAIL);
 
-    const response = await request(app)
+    const response = await request(server)
       .get(`/api/barbers/${otherId}/schedule`)
       .set('Cookie', barber.cookies)
       .expect(403);
@@ -434,13 +448,13 @@ describe.skipIf(!reachable)('authorization', () => {
     const ownId = await barberIdFor(BARBER_EMAIL);
     const headers = { Cookie: barber.cookies, [CSRF_HEADER]: barber.csrfToken };
 
-    await request(app).put(`/api/barbers/${ownId}/schedule`).set(headers).send({ shifts: [] }).expect(403);
-    await request(app)
+    await request(server).put(`/api/barbers/${ownId}/schedule`).set(headers).send({ shifts: [] }).expect(403);
+    await request(server)
       .post(`/api/barbers/${ownId}/exceptions`)
       .set(headers)
       .send({ kind: 'TIME_OFF', startDate: '2027-02-01', allDay: true })
       .expect(403);
-    await request(app)
+    await request(server)
       .post('/api/barbers')
       .set(headers)
       .send({ firstName: 'No', lastName: 'Way', email: 'nope@schedule.test' })
@@ -449,6 +463,6 @@ describe.skipIf(!reachable)('authorization', () => {
 
   it('401s anonymous access', async () => {
     const ownId = await barberIdFor(BARBER_EMAIL);
-    await request(app).get(`/api/barbers/${ownId}/schedule`).expect(401);
+    await request(server).get(`/api/barbers/${ownId}/schedule`).expect(401);
   });
 });

@@ -24,6 +24,7 @@ import { createApp } from '../app.js';
 import { CSRF_HEADER, DEVICE_TOKEN_HEADER } from '../config/constants.js';
 import { prisma } from '../lib/prisma.js';
 import { getAvailability } from '../services/availability.js';
+import { cancelAppointment, createAppointment } from '../services/booking.js';
 import { hashPassword } from '../services/passwords.js';
 import {
   assignQueueBarber,
@@ -35,6 +36,20 @@ import {
 } from '../services/queue.js';
 
 const app = createApp();
+
+/**
+ * One listening server for the whole file.
+ *
+ * `request(app)` starts an ephemeral server and closes it again for EVERY request.
+ * That churn is what produced the intermittent "socket hang up" and "Parse Error:
+ * Expected HTTP/" failures — a client socket outliving the server it was talking to.
+ * They landed in whichever file happened to be running, which is why they read as
+ * database contention for two phases. Binding once removes the whole class.
+ */
+const server = app.listen(0);
+afterAll(() => {
+  server.close();
+});
 
 const PREFIX = 'QTEST ';
 const PASSWORD = 'FrancisCutz!2026';
@@ -205,7 +220,7 @@ function walkIn(overrides: Record<string, unknown> = {}) {
 }
 
 async function session(email: string) {
-  const response = await request(app)
+  const response = await request(server)
     .post('/api/auth/login')
     .send({ email, password: PASSWORD })
     .expect(200);
@@ -219,14 +234,14 @@ async function session(email: string) {
 /** Pairs a kiosk and returns its bearer token. */
 async function kioskToken(): Promise<string> {
   const admin = await session(ADMIN_EMAIL);
-  const created = await request(app)
+  const created = await request(server)
     .post('/api/devices')
     .set('Cookie', admin.cookies)
     .set(CSRF_HEADER, admin.csrfToken)
     .send({ label: `${PREFIX}Front counter`, type: 'KIOSK' })
     .expect(201);
 
-  const paired = await request(app)
+  const paired = await request(server)
     .post('/api/devices/pair')
     .send({ pairingCode: created.body.pairingCode })
     .expect(200);
@@ -432,6 +447,63 @@ describe.skipIf(!reachable)('the queue and the calendar share one day', () => {
     expect(after.slots.map((slot) => slot.toISOString())).toContain(NOW.toISOString());
   });
 
+  /**
+   * The calendar moving the queue, rather than only the other way round.
+   *
+   * Phase 6 recomputed estimates on every *queue* mutation and stopped there, so
+   * booking an appointment took time the board had already promised somebody standing
+   * in the shop and the board went on quoting it. `CLAUDE.md` has always said "queue or
+   * appointment"; this is the appointment half.
+   */
+  it('moves a waiting client when an appointment is booked into their time', async () => {
+    const { entry } = await joinQueue(walkIn({ barberId, now: NOW }));
+
+    const before = await prisma.queueEntry.findUnique({ where: { id: entry.id } });
+    expect(before?.estimatedReadyAt?.toISOString()).toBe(NOW.toISOString());
+
+    await createAppointment({
+      barberId,
+      serviceIds: [cutId],
+      startAt: NOW,
+      client: { phone: CARLA, firstName: 'Carla' },
+      source: 'ONLINE',
+      enforceMinimumNotice: false,
+      now: new Date(NOW.getTime() - 60_000),
+    });
+
+    // Recomputed as a consequence of the booking, with nothing touching the queue.
+    const after = await prisma.queueEntry.findUnique({ where: { id: entry.id } });
+    expect(after?.estimatedReadyAt?.toISOString()).toBe(
+      new Date(NOW.getTime() + 30 * 60_000).toISOString(),
+    );
+  });
+
+  it('gives the time back to the queue when that appointment is cancelled', async () => {
+    const { entry } = await joinQueue(walkIn({ barberId, now: NOW }));
+
+    const appointment = await createAppointment({
+      barberId,
+      serviceIds: [cutId],
+      startAt: NOW,
+      client: { phone: CARLA, firstName: 'Carla' },
+      source: 'ONLINE',
+      enforceMinimumNotice: false,
+      now: new Date(NOW.getTime() - 60_000),
+    });
+
+    // Asserted first, so this test fails if EITHER half of the sync is missing rather
+    // than passing because the estimate never moved in the first place.
+    const pushedBack = await prisma.queueEntry.findUnique({ where: { id: entry.id } });
+    expect(pushedBack?.estimatedReadyAt?.toISOString()).toBe(
+      new Date(NOW.getTime() + 30 * 60_000).toISOString(),
+    );
+
+    await cancelAppointment(appointment.id, { enforceMinimumNotice: false, now: NOW });
+
+    const after = await prisma.queueEntry.findUnique({ where: { id: entry.id } });
+    expect(after?.estimatedReadyAt?.toISOString()).toBe(NOW.toISOString());
+  });
+
   it('schedules a walk-in around an appointment already booked online', async () => {
     // 10:00–10:45 is spoken for, so a 30-minute walk-in cannot start before 10:45.
     await prisma.appointment.create({
@@ -607,25 +679,25 @@ describe.skipIf(!reachable)('who may see what', () => {
   beforeEach(reseed);
 
   it('keeps the staff board away from an unauthenticated request', async () => {
-    await request(app).get('/api/queue').expect(401);
+    await request(server).get('/api/queue').expect(401);
   });
 
   it('keeps the staff board away from a kiosk, which has no roles at all', async () => {
     const token = await kioskToken();
-    await request(app).get('/api/queue').set(DEVICE_TOKEN_HEADER, token).expect(401);
+    await request(server).get('/api/queue').set(DEVICE_TOKEN_HEADER, token).expect(401);
   });
 
   it('gives staff the phone number, because a wandering walk-in has to be callable', async () => {
     const staff = await session(BARBER_EMAIL);
     const token = await kioskToken();
 
-    await request(app)
+    await request(server)
       .post('/api/queue')
       .set(DEVICE_TOKEN_HEADER, token)
       .send({ phone: ALICE, firstName: 'Alice', lastName: 'Anderson', serviceIds: [cutId] })
       .expect(201);
 
-    const board = await request(app).get('/api/queue').set('Cookie', staff.cookies).expect(200);
+    const board = await request(server).get('/api/queue').set('Cookie', staff.cookies).expect(200);
 
     expect(board.body.board.entries[0].clientPhone).toBe(ALICE);
     // Even for staff, the surname is an initial — this string ends up on shared screens.
@@ -635,13 +707,13 @@ describe.skipIf(!reachable)('who may see what', () => {
   it('never puts a phone number or a surname on the screen facing the room', async () => {
     const token = await kioskToken();
 
-    await request(app)
+    await request(server)
       .post('/api/queue')
       .set(DEVICE_TOKEN_HEADER, token)
       .send({ phone: ALICE, firstName: 'Alice', lastName: 'Anderson', serviceIds: [cutId] })
       .expect(201);
 
-    const board = await request(app)
+    const board = await request(server)
       .get('/api/queue/board')
       .set(DEVICE_TOKEN_HEADER, token)
       .expect(200);
@@ -658,7 +730,7 @@ describe.skipIf(!reachable)('who may see what', () => {
   it('does not hand a kiosk the staff board as a side effect of joining', async () => {
     const token = await kioskToken();
 
-    const response = await request(app)
+    const response = await request(server)
       .post('/api/queue')
       .set(DEVICE_TOKEN_HEADER, token)
       .send({ phone: ALICE, firstName: 'Alice', lastName: 'Anderson', serviceIds: [cutId] })
@@ -672,7 +744,7 @@ describe.skipIf(!reachable)('who may see what', () => {
     const token = await kioskToken();
     const staff = await session(BARBER_EMAIL);
 
-    const created = await request(app)
+    const created = await request(server)
       .post('/api/queue')
       .set(DEVICE_TOKEN_HEADER, token)
       .send({ phone: ALICE, firstName: 'Alice', serviceIds: [cutId] })
@@ -683,10 +755,10 @@ describe.skipIf(!reachable)('who may see what', () => {
       `/api/queue/${created.body.entryId}/priority`,
       `/api/queue/${created.body.entryId}/barber`,
     ]) {
-      await request(app).patch(path).set(DEVICE_TOKEN_HEADER, token).send({}).expect(401);
+      await request(server).patch(path).set(DEVICE_TOKEN_HEADER, token).send({}).expect(401);
     }
 
-    await request(app)
+    await request(server)
       .post('/api/queue/call-next')
       .set(DEVICE_TOKEN_HEADER, token)
       .send({ barberId })
@@ -694,7 +766,7 @@ describe.skipIf(!reachable)('who may see what', () => {
 
     // And the same route works for a signed-in barber, so the 401s above are the
     // guard talking rather than the route being broken.
-    await request(app)
+    await request(server)
       .post('/api/queue/call-next')
       .set('Cookie', staff.cookies)
       .set(CSRF_HEADER, staff.csrfToken)
@@ -706,13 +778,13 @@ describe.skipIf(!reachable)('who may see what', () => {
     const staff = await session(ADMIN_EMAIL);
     const token = await kioskToken();
 
-    const created = await request(app)
+    const created = await request(server)
       .post('/api/queue')
       .set(DEVICE_TOKEN_HEADER, token)
       .send({ phone: ALICE, firstName: 'Alice', serviceIds: [cutId] })
       .expect(201);
 
-    await request(app)
+    await request(server)
       .patch(`/api/queue/${created.body.entryId}/priority`)
       .set('Cookie', staff.cookies)
       .set(CSRF_HEADER, staff.csrfToken)

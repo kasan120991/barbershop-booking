@@ -11,6 +11,8 @@
 
 import { z } from 'zod';
 
+import type { PublicQueueBoardDto, QueueBoardDto } from './contracts/queue.js';
+
 /** Fixed rooms. `shop` is staff-only; `kiosk` and `display` receive redacted payloads only. */
 export const SOCKET_ROOM = {
   /** Every authenticated staff member — full payloads. */
@@ -39,6 +41,24 @@ export type ConnectionReady = z.infer<typeof connectionReadySchema>;
 /** Events the server broadcasts. Add new events here first, then emit them. */
 export interface ServerToClientEvents {
   'connection:ready': (payload: ConnectionReady) => void;
+
+  /**
+   * The whole board, renumbered. Sent to `shop` only.
+   *
+   * The board rather than a delta, because moving one person renumbers everyone behind
+   * them — the same reason the REST mutations return it. A delta would have the client
+   * reimplementing the estimator to work out what it meant.
+   */
+  'queue:updated': (payload: QueueBoardDto) => void;
+
+  /**
+   * The same board, redacted, for `kiosk` and `display`.
+   *
+   * A separate event rather than one name carrying either shape, so the type map makes
+   * it impossible to send a full board — phone numbers and all — to a screen that faces
+   * the room. The mistake becomes a compile error instead of a privacy incident.
+   */
+  'queue:public': (payload: PublicQueueBoardDto) => void;
 }
 
 /**

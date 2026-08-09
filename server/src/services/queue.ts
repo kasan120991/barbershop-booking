@@ -34,6 +34,7 @@ import { DateTime } from 'luxon';
 
 import { ConflictError, NotFoundError, ValidationError } from '../lib/errors.js';
 import { prisma } from '../lib/prisma.js';
+import { broadcastQueueBoard } from '../realtime/broadcast.js';
 import { computeFreeIntervals, loadDaySnapshots } from './availability.js';
 import {
   intersectIntervals,
@@ -460,6 +461,19 @@ export async function refreshQueueEstimates(now: Date = new Date()): Promise<Que
       ),
     );
   }
+
+  /**
+   * The single broadcast point for the whole system.
+   *
+   * Every write — join, call, seat, reorder, and now every appointment mutation too —
+   * comes through here, so a new path cannot forget to tell the shop. Putting it in the
+   * routes instead would mean the same line in five handlers, and `POST /queue` does not
+   * share the others' response helper, so that is exactly the one that would be missed.
+   *
+   * Emitted after the estimates are committed, never instead of them: the socket is a
+   * notification, and the REST response remains the answer of record.
+   */
+  broadcastQueueBoard(board);
 
   return board;
 }

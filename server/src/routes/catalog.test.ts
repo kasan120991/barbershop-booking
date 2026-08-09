@@ -16,6 +16,20 @@ import { hashPassword } from '../services/passwords.js';
 
 const app = createApp();
 
+/**
+ * One listening server for the whole file.
+ *
+ * `request(app)` starts an ephemeral server and closes it again for EVERY request.
+ * That churn is what produced the intermittent "socket hang up" and "Parse Error:
+ * Expected HTTP/" failures — a client socket outliving the server it was talking to.
+ * They landed in whichever file happened to be running, which is why they read as
+ * database contention for two phases. Binding once removes the whole class.
+ */
+const server = app.listen(0);
+afterAll(() => {
+  server.close();
+});
+
 const PASSWORD = 'FrancisCutz!2026';
 const ADMIN_EMAIL = 'admin@catalog.test';
 const BARBER_EMAIL = 'barber@catalog.test';
@@ -78,7 +92,7 @@ async function reseed() {
 }
 
 async function signIn(email: string) {
-  const response = await request(app)
+  const response = await request(server)
     .post('/api/auth/login')
     .send({ email, password: PASSWORD })
     .expect(200);
@@ -113,7 +127,7 @@ describe.skipIf(!reachable)('services', () => {
   it('creates a service with money as integer cents', async () => {
     const admin = await signIn(ADMIN_EMAIL);
 
-    const response = await request(app)
+    const response = await request(server)
       .post('/api/services')
       .set('Cookie', admin.cookies)
       .set(CSRF_HEADER, admin.csrfToken)
@@ -128,7 +142,7 @@ describe.skipIf(!reachable)('services', () => {
     const admin = await signIn(ADMIN_EMAIL);
 
     for (const priceCents of [45.5, -100]) {
-      const response = await request(app)
+      const response = await request(server)
         .post('/api/services')
         .set('Cookie', admin.cookies)
         .set(CSRF_HEADER, admin.csrfToken)
@@ -140,14 +154,14 @@ describe.skipIf(!reachable)('services', () => {
 
   it('updates only the fields sent', async () => {
     const admin = await signIn(ADMIN_EMAIL);
-    const created = await request(app)
+    const created = await request(server)
       .post('/api/services')
       .set('Cookie', admin.cookies)
       .set(CSRF_HEADER, admin.csrfToken)
       .send(makeService())
       .expect(201);
 
-    const updated = await request(app)
+    const updated = await request(server)
       .patch(`/api/services/${created.body.service.id}`)
       .set('Cookie', admin.cookies)
       .set(CSRF_HEADER, admin.csrfToken)
@@ -162,26 +176,26 @@ describe.skipIf(!reachable)('services', () => {
 
   it('hides archived services from the public list but keeps them for staff', async () => {
     const admin = await signIn(ADMIN_EMAIL);
-    const created = await request(app)
+    const created = await request(server)
       .post('/api/services')
       .set('Cookie', admin.cookies)
       .set(CSRF_HEADER, admin.csrfToken)
       .send(makeService({ name: `${PREFIX}Archived` }))
       .expect(201);
 
-    await request(app)
+    await request(server)
       .patch(`/api/services/${created.body.service.id}`)
       .set('Cookie', admin.cookies)
       .set(CSRF_HEADER, admin.csrfToken)
       .send({ isActive: false })
       .expect(200);
 
-    const anonymous = await request(app).get('/api/services').expect(200);
+    const anonymous = await request(server).get('/api/services').expect(200);
     expect(anonymous.body.services.some((s: { name: string }) => s.name === `${PREFIX}Archived`)).toBe(
       false,
     );
 
-    const staff = await request(app).get('/api/services').set('Cookie', admin.cookies).expect(200);
+    const staff = await request(server).get('/api/services').set('Cookie', admin.cookies).expect(200);
     expect(staff.body.services.some((s: { name: string }) => s.name === `${PREFIX}Archived`)).toBe(
       true,
     );
@@ -189,7 +203,7 @@ describe.skipIf(!reachable)('services', () => {
 
   it('assigns barbers to a service, replacing the previous set', async () => {
     const admin = await signIn(ADMIN_EMAIL);
-    const created = await request(app)
+    const created = await request(server)
       .post('/api/services')
       .set('Cookie', admin.cookies)
       .set(CSRF_HEADER, admin.csrfToken)
@@ -198,28 +212,28 @@ describe.skipIf(!reachable)('services', () => {
 
     const barber = await prisma.barber.findFirst({ where: { user: { email: BARBER_EMAIL } } });
 
-    await request(app)
+    await request(server)
       .put(`/api/services/${created.body.service.id}/barbers`)
       .set('Cookie', admin.cookies)
       .set(CSRF_HEADER, admin.csrfToken)
       .send({ barberIds: [barber!.id] })
       .expect(204);
 
-    const listed = await request(app).get('/api/services').set('Cookie', admin.cookies).expect(200);
+    const listed = await request(server).get('/api/services').set('Cookie', admin.cookies).expect(200);
     const service = listed.body.services.find(
       (s: { id: string }) => s.id === created.body.service.id,
     );
     expect(service.barberIds).toEqual([barber!.id]);
 
     // Sending an empty set clears it rather than being ignored.
-    await request(app)
+    await request(server)
       .put(`/api/services/${created.body.service.id}/barbers`)
       .set('Cookie', admin.cookies)
       .set(CSRF_HEADER, admin.csrfToken)
       .send({ barberIds: [] })
       .expect(204);
 
-    const cleared = await request(app).get('/api/services').set('Cookie', admin.cookies).expect(200);
+    const cleared = await request(server).get('/api/services').set('Cookie', admin.cookies).expect(200);
     expect(
       cleared.body.services.find((s: { id: string }) => s.id === created.body.service.id).barberIds,
     ).toEqual([]);
@@ -227,14 +241,14 @@ describe.skipIf(!reachable)('services', () => {
 
   it('writes an audit row for a price change', async () => {
     const admin = await signIn(ADMIN_EMAIL);
-    const created = await request(app)
+    const created = await request(server)
       .post('/api/services')
       .set('Cookie', admin.cookies)
       .set(CSRF_HEADER, admin.csrfToken)
       .send(makeService())
       .expect(201);
 
-    await request(app)
+    await request(server)
       .patch(`/api/services/${created.body.service.id}`)
       .set('Cookie', admin.cookies)
       .set(CSRF_HEADER, admin.csrfToken)
@@ -258,14 +272,14 @@ describe.skipIf(!reachable)('deleting a service', () => {
 
   it('deletes one that has never been booked', async () => {
     const admin = await signIn(ADMIN_EMAIL);
-    const created = await request(app)
+    const created = await request(server)
       .post('/api/services')
       .set('Cookie', admin.cookies)
       .set(CSRF_HEADER, admin.csrfToken)
       .send(makeService({ name: `${PREFIX}Typo` }))
       .expect(201);
 
-    await request(app)
+    await request(server)
       .delete(`/api/services/${created.body.service.id}`)
       .set('Cookie', admin.cookies)
       .set(CSRF_HEADER, admin.csrfToken)
@@ -280,7 +294,7 @@ describe.skipIf(!reachable)('deleting a service', () => {
    */
   it('refuses to delete one that has been booked, and says to archive instead', async () => {
     const admin = await signIn(ADMIN_EMAIL);
-    const created = await request(app)
+    const created = await request(server)
       .post('/api/services')
       .set('Cookie', admin.cookies)
       .set(CSRF_HEADER, admin.csrfToken)
@@ -312,7 +326,7 @@ describe.skipIf(!reachable)('deleting a service', () => {
       },
     });
 
-    const response = await request(app)
+    const response = await request(server)
       .delete(`/api/services/${created.body.service.id}`)
       .set('Cookie', admin.cookies)
       .set(CSRF_HEADER, admin.csrfToken)
@@ -329,14 +343,14 @@ describe.skipIf(!reachable)('deleting a service', () => {
 
   it('reports usage so the UI can hide Delete rather than offer a failure', async () => {
     const admin = await signIn(ADMIN_EMAIL);
-    const created = await request(app)
+    const created = await request(server)
       .post('/api/services')
       .set('Cookie', admin.cookies)
       .set(CSRF_HEADER, admin.csrfToken)
       .send(makeService({ name: `${PREFIX}Unused` }))
       .expect(201);
 
-    const response = await request(app)
+    const response = await request(server)
       .get(`/api/services/${created.body.service.id}/usage`)
       .set('Cookie', admin.cookies)
       .expect(200);
@@ -358,7 +372,7 @@ describe.skipIf(!reachable)('shop hours and closures', () => {
       isClosed: dayOfWeek === 0,
     }));
 
-    const response = await request(app)
+    const response = await request(server)
       .put('/api/shop-hours')
       .set('Cookie', admin.cookies)
       .set(CSRF_HEADER, admin.csrfToken)
@@ -383,7 +397,7 @@ describe.skipIf(!reachable)('shop hours and closures', () => {
       isClosed: false,
     }));
 
-    await request(app)
+    await request(server)
       .put('/api/shop-hours')
       .set('Cookie', admin.cookies)
       .set(CSRF_HEADER, admin.csrfToken)
@@ -400,7 +414,7 @@ describe.skipIf(!reachable)('shop hours and closures', () => {
       isClosed: false,
     }));
 
-    await request(app)
+    await request(server)
       .put('/api/shop-hours')
       .set('Cookie', admin.cookies)
       .set(CSRF_HEADER, admin.csrfToken)
@@ -416,7 +430,7 @@ describe.skipIf(!reachable)('shop hours and closures', () => {
   it('converts a local closure date to the shop timezone, not UTC', async () => {
     const admin = await signIn(ADMIN_EMAIL);
 
-    const created = await request(app)
+    const created = await request(server)
       .post('/api/shop-closures')
       .set('Cookie', admin.cookies)
       .set(CSRF_HEADER, admin.csrfToken)
@@ -439,7 +453,7 @@ describe.skipIf(!reachable)('shop hours and closures', () => {
   it('converts a summer date with the other offset', async () => {
     const admin = await signIn(ADMIN_EMAIL);
 
-    const created = await request(app)
+    const created = await request(server)
       .post('/api/shop-closures')
       .set('Cookie', admin.cookies)
       .set(CSRF_HEADER, admin.csrfToken)
@@ -455,7 +469,7 @@ describe.skipIf(!reachable)('shop hours and closures', () => {
 
   it('rejects an end date before the start', async () => {
     const admin = await signIn(ADMIN_EMAIL);
-    await request(app)
+    await request(server)
       .post('/api/shop-closures')
       .set('Cookie', admin.cookies)
       .set(CSRF_HEADER, admin.csrfToken)
@@ -465,7 +479,7 @@ describe.skipIf(!reachable)('shop hours and closures', () => {
 
   it('rejects an unknown timezone', async () => {
     const admin = await signIn(ADMIN_EMAIL);
-    await request(app)
+    await request(server)
       .patch('/api/shop-settings')
       .set('Cookie', admin.cookies)
       .set(CSRF_HEADER, admin.csrfToken)
@@ -478,9 +492,9 @@ describe.skipIf(!reachable)('authorization', () => {
   beforeEach(reseed);
 
   it('lets anyone read the menu and the roster', async () => {
-    await request(app).get('/api/services').expect(200);
-    await request(app).get('/api/barbers').expect(200);
-    await request(app).get('/api/shop-settings').expect(200);
+    await request(server).get('/api/services').expect(200);
+    await request(server).get('/api/barbers').expect(200);
+    await request(server).get('/api/shop-settings').expect(200);
   });
 
   /**
@@ -489,7 +503,7 @@ describe.skipIf(!reachable)('authorization', () => {
    * so an index would be testing whatever happened to be first at that instant.
    */
   it('never exposes Stripe fields on the public roster', async () => {
-    const response = await request(app).get('/api/barbers').expect(200);
+    const response = await request(server).get('/api/barbers').expect(200);
 
     const serialized = JSON.stringify(response.body);
     expect(serialized).not.toContain('stripe');
@@ -505,7 +519,7 @@ describe.skipIf(!reachable)('authorization', () => {
 
   it('does expose account state to signed-in staff', async () => {
     const admin = await signIn(ADMIN_EMAIL);
-    const response = await request(app).get('/api/barbers').set('Cookie', admin.cookies).expect(200);
+    const response = await request(server).get('/api/barbers').set('Cookie', admin.cookies).expect(200);
 
     const mine = response.body.barbers.find(
       (barber: { displayName: string }) => barber.displayName === 'Cat Barber',
@@ -521,9 +535,9 @@ describe.skipIf(!reachable)('authorization', () => {
     const barber = await signIn(BARBER_EMAIL);
     const headers = { Cookie: barber.cookies, [CSRF_HEADER]: barber.csrfToken };
 
-    await request(app).post('/api/services').set(headers).send(makeService()).expect(403);
-    await request(app).patch('/api/shop-settings').set(headers).send({ name: 'Nope' }).expect(403);
-    await request(app)
+    await request(server).post('/api/services').set(headers).send(makeService()).expect(403);
+    await request(server).patch('/api/shop-settings').set(headers).send({ name: 'Nope' }).expect(403);
+    await request(server)
       .post('/api/shop-closures')
       .set(headers)
       .send({ startDate: '2026-12-25', endDate: '2026-12-25' })
@@ -531,6 +545,6 @@ describe.skipIf(!reachable)('authorization', () => {
   });
 
   it('401s an anonymous write', async () => {
-    await request(app).post('/api/services').send(makeService()).expect(401);
+    await request(server).post('/api/services').send(makeService()).expect(401);
   });
 });

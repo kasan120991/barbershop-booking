@@ -35,6 +35,44 @@ function baseCookieOptions(expiresAt: Date): CookieOptions {
   };
 }
 
+/**
+ * Reads a raw `Cookie` header into a map.
+ *
+ * `cookie-parser` only exists as Express middleware, and a Socket.IO handshake has no
+ * `req`/`res` pair to run it against — `socket.handshake.headers.cookie` is a bare
+ * string. The `cookie` package would do this, but it is only a transitive dependency
+ * here and pnpm's strict layout makes it unimportable without declaring it, which is a
+ * dependency to maintain for fifteen lines.
+ *
+ * Values are `decodeURIComponent`d to match what `cookie-parser` hands the HTTP path,
+ * so the same token resolves identically over both transports.
+ */
+export function parseCookieHeader(header: string | undefined): Record<string, string> {
+  if (!header) return {};
+
+  const jar: Record<string, string> = {};
+
+  for (const part of header.split(';')) {
+    const separator = part.indexOf('=');
+    // No `=` at all is not a cookie; an empty name is not one either.
+    if (separator < 1) continue;
+
+    const name = part.slice(0, separator).trim();
+    if (name === '') continue;
+
+    const raw = part.slice(separator + 1).trim();
+    try {
+      jar[name] = decodeURIComponent(raw);
+    } catch {
+      // A malformed escape must not take down the handshake — keep it verbatim and
+      // let the token lookup fail on its own terms.
+      jar[name] = raw;
+    }
+  }
+
+  return jar;
+}
+
 export function setSessionCookies(
   res: Response,
   tokens: { sessionToken: string; csrfToken: string; expiresAt: Date },

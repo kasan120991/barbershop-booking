@@ -148,6 +148,12 @@ Settled while building it:
 - `callNext` is the queue's one real race and takes `SELECT ... FOR UPDATE` on the candidate row,
   re-checking status inside the lock. `refreshQueueEstimates` sorts its updates by id so two
   concurrent refreshes take row locks in the same order and cannot deadlock.
+- **Appointment mutations recompute the queue too** — `createAppointment`, `cancelAppointment` and
+  `updateAppointmentStatus` all call `refreshQueueEstimates(now)`. The calendar and the line share
+  one day, so booking a cut takes time the board has already promised somebody standing in the
+  shop. `now` is threaded through rather than read from the clock, or a booking made against an
+  injected clock recomputes against the real one and the test asserts on a different world than
+  the code answers about.
 
 ---
 
@@ -159,6 +165,34 @@ Settled while building it:
   server and both frontends at once.
 - **`kiosk` and `display` rooms get a redacted payload** — first name + last initial only, never a
   full phone number. That screen faces the whole shop.
+
+Settled while building it:
+
+- **The room is the privacy boundary, and it is decided from the principal alone.** `rooms.ts`
+  works it out at handshake; there is no "join" message to forge, because `ClientToServerEvents`
+  is empty.
+- **Two events, not one with a union payload.** `queue:updated` carries the full board to `shop`;
+  `queue:public` carries the redacted one to `kiosk`/`display`. Sending the wrong shape to the
+  wrong room is then a compile error rather than a privacy incident.
+- **Everything broadcasts from `refreshQueueEstimates`**, the one function every mutation already
+  calls. Emitting from the routes would mean the same line in five handlers, and `POST /queue`
+  does not share the others' response helper — so that is exactly the one that would be missed.
+- **`realtime/broadcast.ts` holds the socket handle, separately from `realtime/index.ts`**, because
+  the server needs to read the queue on connect and the queue service needs to emit. In one file
+  that is an import cycle that happens to work until something reorders it.
+- **The socket handshake rejects**, where the HTTP middleware only resolves. An unidentified
+  request may still be a legitimate public booking; an unidentified socket has no room to join.
+- **A new connection is sent the current board immediately**, so a client that reconnects after a
+  dropped link is right at once rather than at the next mutation — which on a quiet afternoon
+  could be an hour.
+- **`closeRealtime()` must run before `httpServer.close()`.** An idle websocket is an open
+  connection and the HTTP server waits for it forever, so leaving it turns every deploy into a
+  ten-second wait for the shutdown backstop.
+- **A poll still runs underneath, at a minute.** Not for a link that drops loudly — Socket.IO
+  reconnects by itself — but for one that dies quietly while reporting itself healthy, where a
+  frozen board looks exactly like a quiet morning.
+- **A rejected handshake never signs anyone out.** It happens routinely on a server restart; the
+  REST layer is the authority on the session.
 
 ---
 
@@ -227,6 +261,13 @@ Settled while building it:
 - **Hash test passwords once per file, not per fixture.** argon2 is memory-hard by design, so a
   `beforeEach` that seeds three accounts is a hundred passes in one file and slows the shared suite
   for no coverage — `passwords.test.ts` already owns that path.
+- **Bind one server per test file: `const server = app.listen(0)`, then `request(server)`.**
+  Passing the Express app to supertest makes it start an ephemeral server and close it again for
+  *every request*, and a client socket that outlives its server surfaces as `Error: socket hang up`
+  or `Parse Error: Expected HTTP/, RTSP/ or ICE/` — with no stack into our code, in whichever file
+  happened to be running. It read as database contention for two phases and is not: it is
+  connection churn, unrelated to whatever the failing test was about. Close the server in an
+  `afterAll`.
 - Database-backed tests share one database, so **scope every `deleteMany`/`updateMany` in a test to
   that file's own fixtures**. Each test file owns an email domain (`@auth.test`, `@devices.test`,
   `@catalog.test`). Equally, **never assert on a global list by index** — `barbers[0]` is whatever

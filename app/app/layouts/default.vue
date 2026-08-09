@@ -31,12 +31,16 @@ const { items } = useNavigation();
 const { collapsed, toggle: toggleRail } = useRailState();
 
 /**
- * The shell owns the one queue poll for the whole app.
+ * The shell owns the one socket connection for the whole app.
  *
  * It lives here rather than on `/queue` because the count in the rail and the pill
  * above have to stay honest on every screen — a barber taking a payment still needs to
- * see the line growing. Phase 7 replaces this single call with a socket subscription
- * to the `shop` room, and nothing that reads the board has to change.
+ * see the line growing.
+ *
+ * The poll has not gone away, it has slowed to a minute. Socket.IO reconnects by
+ * itself, so this is not there for a connection that drops loudly; it is there for the
+ * one that dies quietly and keeps reporting itself healthy, where a frozen board looks
+ * exactly like a quiet morning.
  *
  * Deliberately NOT awaited. A top-level `await` here makes the whole layout an async
  * component, and `useTemplateRef` below then runs without an instance context and
@@ -46,7 +50,9 @@ const { collapsed, toggle: toggleRail } = useRailState();
  * already rendered, so a server-rendered count would hydrate to a different number.
  */
 const queue = useQueue();
-queue.poll(15_000);
+const realtime = useRealtime();
+realtime.connect();
+queue.poll(60_000);
 
 const drawerOpen = ref(false);
 const signingOut = ref(false);

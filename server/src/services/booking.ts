@@ -14,9 +14,39 @@
 import { normalizePhone, type AppointmentSource } from '@francis/shared';
 import { DateTime } from 'luxon';
 
+import { logger } from '../lib/logger.js';
+
 import type { AppointmentStatus } from '../generated/prisma/enums.js';
 import { ConflictError, NotFoundError, ValidationError } from '../lib/errors.js';
 import { prisma } from '../lib/prisma.js';
+import { refreshQueueEstimates } from './queue.js';
+
+/**
+ * The calendar and the walk-in line share one day, so changing either moves the other.
+ *
+ * Booking an appointment takes time the estimator had already promised to somebody
+ * standing in the shop; cancelling one hands it back. Without this, the board keeps
+ * quoting a slot that was sold five seconds ago and only corrects itself the next time
+ * the queue happens to be touched.
+ *
+ * Deliberately awaited rather than fired and forgotten: the caller's response should
+ * not describe a world the board disagrees with. It also broadcasts, because
+ * `refreshQueueEstimates` is the one place that does.
+ *
+ * `now` is threaded through rather than read from the clock here, for the same reason
+ * every other estimate in this codebase takes it: a booking made against an injected
+ * clock must recompute against that same clock, or the test asserts on one world and
+ * the code answers about another.
+ */
+async function syncQueueAfterAppointmentChange(now: Date): Promise<void> {
+  try {
+    await refreshQueueEstimates(now);
+  } catch (error) {
+    // A failed recompute must not fail the booking that already committed. The next
+    // queue mutation, or the client's fallback poll, will correct it.
+    logger.error({ err: error }, 'Failed to recompute queue estimates after an appointment change');
+  }
+}
 
 export interface CreateAppointmentInput {
   barberId: string;
@@ -103,7 +133,7 @@ export async function createAppointment(input: CreateAppointmentInput) {
    * `FOR UPDATE` only holds a lock for the duration of the transaction that took it,
    * and Prisma's array form would spread these across connections.
    */
-  return prisma.$transaction(async (tx) => {
+  const appointment = await prisma.$transaction(async (tx) => {
     // The lock row has to exist before it can be locked, and creating it must not
     // race either. INSERT IGNORE is a no-op when another request got there first.
     await tx.$executeRaw`
@@ -159,6 +189,12 @@ export async function createAppointment(input: CreateAppointmentInput) {
       include: { services: true, client: true, barber: true },
     });
   });
+
+  // Outside the transaction: the estimator reads committed rows, and holding the day
+  // lock while it recomputes would serialise every booking behind it.
+  await syncQueueAfterAppointmentChange(now);
+
+  return appointment;
 }
 
 // --- Reads -------------------------------------------------------------------
@@ -213,7 +249,7 @@ async function cancel(
     }
   }
 
-  return prisma.appointment.update({
+  const cancelled = await prisma.appointment.update({
     where: { id: appointment.id },
     data: {
       status: 'CANCELLED',
@@ -221,6 +257,11 @@ async function cancel(
       cancelReason: options.reason ?? null,
     },
   });
+
+  // The chair is free again, so somebody waiting may now be seen sooner.
+  await syncQueueAfterAppointmentChange(now);
+
+  return cancelled;
 }
 
 /** Staff cancellation, by id. */
@@ -253,7 +294,11 @@ const ALLOWED_TRANSITIONS: Record<AppointmentStatus, AppointmentStatus[]> = {
   NO_SHOW: [],
 };
 
-export async function updateAppointmentStatus(appointmentId: string, next: AppointmentStatus) {
+export async function updateAppointmentStatus(
+  appointmentId: string,
+  next: AppointmentStatus,
+  now: Date = new Date(),
+) {
   const appointment = await prisma.appointment.findUnique({ where: { id: appointmentId } });
   if (!appointment) throw new NotFoundError('Appointment not found.');
 
@@ -263,11 +308,20 @@ export async function updateAppointmentStatus(appointmentId: string, next: Appoi
     );
   }
 
-  return prisma.appointment.update({
+  const updated = await prisma.appointment.update({
     where: { id: appointmentId },
     data: {
       status: next,
-      ...(next === 'CANCELLED' ? { cancelledAt: new Date() } : {}),
+      // The injected clock, so a stamped time and a recomputed estimate cannot come
+      // from two different moments.
+      ...(next === 'CANCELLED' ? { cancelledAt: now } : {}),
     },
   });
+
+  // CANCELLED and NO_SHOW free the chair; the others do not, but the recompute is
+  // cheap and unconditional beats a condition that has to be kept in step with
+  // `BLOCKING`.
+  await syncQueueAfterAppointmentChange(now);
+
+  return updated;
 }

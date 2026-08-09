@@ -17,6 +17,20 @@ import { hashPassword } from '../services/passwords.js';
 
 const app = createApp();
 
+/**
+ * One listening server for the whole file.
+ *
+ * `request(app)` starts an ephemeral server and closes it again for EVERY request.
+ * That churn is what produced the intermittent "socket hang up" and "Parse Error:
+ * Expected HTTP/" failures — a client socket outliving the server it was talking to.
+ * They landed in whichever file happened to be running, which is why they read as
+ * database contention for two phases. Binding once removes the whole class.
+ */
+const server = app.listen(0);
+afterAll(() => {
+  server.close();
+});
+
 const PASSWORD = 'FrancisCutz!2026';
 const ADMIN_EMAIL = 'test-admin@auth.test';
 const BARBER_EMAIL = 'test-barber@auth.test';
@@ -61,7 +75,7 @@ async function reseed() {
 
 /** Signs in and returns the pieces later requests need. */
 async function signIn(email = ADMIN_EMAIL, password = PASSWORD) {
-  const response = await request(app)
+  const response = await request(server)
     .post('/api/auth/login')
     .send({ email, password })
     .expect(200);
@@ -86,7 +100,7 @@ describe.skipIf(!reachable)('auth', () => {
 
   describe('POST /api/auth/login', () => {
     it('sets an httpOnly session cookie and a readable CSRF cookie', async () => {
-      const response = await request(app)
+      const response = await request(server)
         .post('/api/auth/login')
         .send({ email: ADMIN_EMAIL, password: PASSWORD })
         .expect(200);
@@ -116,7 +130,7 @@ describe.skipIf(!reachable)('auth', () => {
     });
 
     it('never returns the password hash', async () => {
-      const response = await request(app)
+      const response = await request(server)
         .post('/api/auth/login')
         .send({ email: ADMIN_EMAIL, password: PASSWORD })
         .expect(200);
@@ -126,7 +140,7 @@ describe.skipIf(!reachable)('auth', () => {
     });
 
     it('stores only a hash — the cookie value is never in the database', async () => {
-      const response = await request(app)
+      const response = await request(server)
         .post('/api/auth/login')
         .send({ email: ADMIN_EMAIL, password: PASSWORD })
         .expect(200);
@@ -141,12 +155,12 @@ describe.skipIf(!reachable)('auth', () => {
     });
 
     it('rejects a wrong password and an unknown email identically', async () => {
-      const wrongPassword = await request(app)
+      const wrongPassword = await request(server)
         .post('/api/auth/login')
         .send({ email: ADMIN_EMAIL, password: 'wrong-password' })
         .expect(401);
 
-      const unknownEmail = await request(app)
+      const unknownEmail = await request(server)
         .post('/api/auth/login')
         .send({ email: 'nobody@auth.test', password: PASSWORD })
         .expect(401);
@@ -157,7 +171,7 @@ describe.skipIf(!reachable)('auth', () => {
     });
 
     it('rejects a malformed body with field errors', async () => {
-      const response = await request(app)
+      const response = await request(server)
         .post('/api/auth/login')
         .send({ email: 'not-an-email' })
         .expect(400);
@@ -170,17 +184,17 @@ describe.skipIf(!reachable)('auth', () => {
   describe('GET /api/auth/me', () => {
     it('returns the signed-in user', async () => {
       const { cookies } = await signIn();
-      const response = await request(app).get('/api/auth/me').set('Cookie', cookies).expect(200);
+      const response = await request(server).get('/api/auth/me').set('Cookie', cookies).expect(200);
       expect(response.body.user.email).toBe(ADMIN_EMAIL);
     });
 
     it('401s without a session', async () => {
-      const response = await request(app).get('/api/auth/me').expect(401);
+      const response = await request(server).get('/api/auth/me').expect(401);
       expect(response.body.error.code).toBe('UNAUTHENTICATED');
     });
 
     it('401s with a garbage cookie rather than 500ing', async () => {
-      await request(app)
+      await request(server)
         .get('/api/auth/me')
         .set('Cookie', [`${SESSION_COOKIE}=not-a-real-token`])
         .expect(401);
@@ -191,15 +205,15 @@ describe.skipIf(!reachable)('auth', () => {
     it('revokes the session so the same cookie stops working', async () => {
       const { cookies, csrfToken } = await signIn();
 
-      await request(app).get('/api/auth/me').set('Cookie', cookies).expect(200);
+      await request(server).get('/api/auth/me').set('Cookie', cookies).expect(200);
 
-      await request(app)
+      await request(server)
         .post('/api/auth/logout')
         .set('Cookie', cookies)
         .set(CSRF_HEADER, csrfToken)
         .expect(204);
 
-      await request(app).get('/api/auth/me').set('Cookie', cookies).expect(401);
+      await request(server).get('/api/auth/me').set('Cookie', cookies).expect(401);
     });
   });
 
@@ -215,7 +229,7 @@ describe.skipIf(!reachable)('auth', () => {
         data: { expiresAt: new Date(Date.now() - 1000) },
       });
 
-      await request(app).get('/api/auth/me').set('Cookie', cookies).expect(401);
+      await request(server).get('/api/auth/me').set('Cookie', cookies).expect(401);
     });
 
     it('does not slide the expiry — sessions are absolute', async () => {
@@ -226,7 +240,7 @@ describe.skipIf(!reachable)('auth', () => {
         where: { user: { email: { contains: '@auth.test' } } },
       });
 
-      await request(app).get('/api/auth/me').set('Cookie', cookies).expect(200);
+      await request(server).get('/api/auth/me').set('Cookie', cookies).expect(200);
 
       const after = await prisma.session.findFirst({ where: { id: before!.id } });
       expect(after!.expiresAt.getTime()).toBe(before!.expiresAt.getTime());
@@ -236,7 +250,7 @@ describe.skipIf(!reachable)('auth', () => {
   describe('CSRF', () => {
     it('rejects a mutation with no token', async () => {
       const { cookies } = await signIn();
-      const response = await request(app).post('/api/auth/logout').set('Cookie', cookies).expect(403);
+      const response = await request(server).post('/api/auth/logout').set('Cookie', cookies).expect(403);
       expect(response.body.error.message).toMatch(/csrf/i);
     });
 
@@ -244,7 +258,7 @@ describe.skipIf(!reachable)('auth', () => {
       const first = await signIn();
       const second = await signIn();
 
-      await request(app)
+      await request(server)
         .post('/api/auth/logout')
         .set('Cookie', first.cookies)
         .set(CSRF_HEADER, second.csrfToken)
@@ -253,7 +267,7 @@ describe.skipIf(!reachable)('auth', () => {
 
     it('accepts the matching token', async () => {
       const { cookies, csrfToken } = await signIn();
-      await request(app)
+      await request(server)
         .post('/api/auth/logout')
         .set('Cookie', cookies)
         .set(CSRF_HEADER, csrfToken)
@@ -262,14 +276,14 @@ describe.skipIf(!reachable)('auth', () => {
 
     it('does not require a token for a safe method', async () => {
       const { cookies } = await signIn();
-      await request(app).get('/api/auth/me').set('Cookie', cookies).expect(200);
+      await request(server).get('/api/auth/me').set('Cookie', cookies).expect(200);
     });
   });
 
   describe('account lockout', () => {
     it(`locks after ${MAX_FAILED_LOGIN_ATTEMPTS} failures and then rejects the CORRECT password`, async () => {
       for (let attempt = 1; attempt < MAX_FAILED_LOGIN_ATTEMPTS; attempt += 1) {
-        await request(app)
+        await request(server)
           .post('/api/auth/login')
           .send({ email: BARBER_EMAIL, password: 'wrong' })
           .expect(401);
@@ -277,14 +291,14 @@ describe.skipIf(!reachable)('auth', () => {
 
       // The threshold attempt reports the lock rather than a generic failure, so the
       // barber knows to find the owner instead of retyping.
-      const locking = await request(app)
+      const locking = await request(server)
         .post('/api/auth/login')
         .send({ email: BARBER_EMAIL, password: 'wrong' })
         .expect(403);
       expect(locking.body.error.message).toMatch(/locked/i);
 
       // The real proof: the right password no longer works.
-      const afterLock = await request(app)
+      const afterLock = await request(server)
         .post('/api/auth/login')
         .send({ email: BARBER_EMAIL, password: PASSWORD })
         .expect(403);
@@ -293,7 +307,7 @@ describe.skipIf(!reachable)('auth', () => {
 
     it('resets the counter on a successful login', async () => {
       for (let attempt = 0; attempt < MAX_FAILED_LOGIN_ATTEMPTS - 1; attempt += 1) {
-        await request(app)
+        await request(server)
           .post('/api/auth/login')
           .send({ email: BARBER_EMAIL, password: 'wrong' })
           .expect(401);
@@ -308,14 +322,14 @@ describe.skipIf(!reachable)('auth', () => {
 
     it('kills existing sessions when the account locks', async () => {
       const { cookies } = await signIn(BARBER_EMAIL);
-      await request(app).get('/api/auth/me').set('Cookie', cookies).expect(200);
+      await request(server).get('/api/auth/me').set('Cookie', cookies).expect(200);
 
       for (let attempt = 0; attempt < MAX_FAILED_LOGIN_ATTEMPTS; attempt += 1) {
-        await request(app).post('/api/auth/login').send({ email: BARBER_EMAIL, password: 'wrong' });
+        await request(server).post('/api/auth/login').send({ email: BARBER_EMAIL, password: 'wrong' });
       }
 
       // A session that predates the lock must not outlive it.
-      await request(app).get('/api/auth/me').set('Cookie', cookies).expect(401);
+      await request(server).get('/api/auth/me').set('Cookie', cookies).expect(401);
     });
   });
 
@@ -323,7 +337,7 @@ describe.skipIf(!reachable)('auth', () => {
     it('403s a BARBER on an admin-only route', async () => {
       const { cookies, csrfToken } = await signIn(BARBER_EMAIL);
 
-      const response = await request(app)
+      const response = await request(server)
         .post('/api/devices')
         .set('Cookie', cookies)
         .set(CSRF_HEADER, csrfToken)
@@ -336,7 +350,7 @@ describe.skipIf(!reachable)('auth', () => {
     it('allows an ADMIN', async () => {
       const { cookies, csrfToken } = await signIn(ADMIN_EMAIL);
 
-      await request(app)
+      await request(server)
         .post('/api/devices')
         .set('Cookie', cookies)
         .set(CSRF_HEADER, csrfToken)
@@ -345,7 +359,7 @@ describe.skipIf(!reachable)('auth', () => {
     });
 
     it('401s an anonymous request to an admin route', async () => {
-      await request(app).get('/api/devices').expect(401);
+      await request(server).get('/api/devices').expect(401);
     });
   });
 
@@ -356,7 +370,7 @@ describe.skipIf(!reachable)('auth', () => {
 
       const barber = await prisma.user.findUnique({ where: { email: BARBER_EMAIL } });
 
-      const response = await request(app)
+      const response = await request(server)
         .post(`/api/staff/${barber!.id}/reset-password`)
         .set('Cookie', admin.cookies)
         .set(CSRF_HEADER, admin.csrfToken)
@@ -365,15 +379,15 @@ describe.skipIf(!reachable)('auth', () => {
       expect(response.body.temporaryPassword).toMatch(/^[a-z]+-[a-z]+-\d{4}$/);
 
       // The barber's existing session dies with the reset.
-      await request(app).get('/api/auth/me').set('Cookie', barberSession.cookies).expect(401);
+      await request(server).get('/api/auth/me').set('Cookie', barberSession.cookies).expect(401);
 
       // The old password no longer works; the temporary one does.
-      await request(app)
+      await request(server)
         .post('/api/auth/login')
         .send({ email: BARBER_EMAIL, password: PASSWORD })
         .expect(401);
 
-      const withTemp = await request(app)
+      const withTemp = await request(server)
         .post('/api/auth/login')
         .send({ email: BARBER_EMAIL, password: response.body.temporaryPassword })
         .expect(200);
@@ -383,9 +397,9 @@ describe.skipIf(!reachable)('auth', () => {
 
     it('unlocks a locked account', async () => {
       for (let attempt = 0; attempt < MAX_FAILED_LOGIN_ATTEMPTS; attempt += 1) {
-        await request(app).post('/api/auth/login').send({ email: BARBER_EMAIL, password: 'wrong' });
+        await request(server).post('/api/auth/login').send({ email: BARBER_EMAIL, password: 'wrong' });
       }
-      await request(app)
+      await request(server)
         .post('/api/auth/login')
         .send({ email: BARBER_EMAIL, password: PASSWORD })
         .expect(403);
@@ -393,13 +407,13 @@ describe.skipIf(!reachable)('auth', () => {
       const admin = await signIn(ADMIN_EMAIL);
       const barber = await prisma.user.findUnique({ where: { email: BARBER_EMAIL } });
 
-      await request(app)
+      await request(server)
         .post(`/api/staff/${barber!.id}/unlock`)
         .set('Cookie', admin.cookies)
         .set(CSRF_HEADER, admin.csrfToken)
         .expect(204);
 
-      await request(app)
+      await request(server)
         .post('/api/auth/login')
         .send({ email: BARBER_EMAIL, password: PASSWORD })
         .expect(200);
@@ -409,7 +423,7 @@ describe.skipIf(!reachable)('auth', () => {
       const barberSession = await signIn(BARBER_EMAIL);
       const admin = await prisma.user.findUnique({ where: { email: ADMIN_EMAIL } });
 
-      await request(app)
+      await request(server)
         .post(`/api/staff/${admin!.id}/reset-password`)
         .set('Cookie', barberSession.cookies)
         .set(CSRF_HEADER, barberSession.csrfToken)
@@ -421,14 +435,14 @@ describe.skipIf(!reachable)('auth', () => {
     it('requires the current password and then revokes every session', async () => {
       const { cookies, csrfToken } = await signIn(BARBER_EMAIL);
 
-      await request(app)
+      await request(server)
         .post('/api/auth/change-password')
         .set('Cookie', cookies)
         .set(CSRF_HEADER, csrfToken)
         .send({ currentPassword: 'wrong', newPassword: 'a-brand-new-password' })
         .expect(401);
 
-      await request(app)
+      await request(server)
         .post('/api/auth/change-password')
         .set('Cookie', cookies)
         .set(CSRF_HEADER, csrfToken)
@@ -436,9 +450,9 @@ describe.skipIf(!reachable)('auth', () => {
         .expect(204);
 
       // Changing a password must not leave an attacker's session alive.
-      await request(app).get('/api/auth/me').set('Cookie', cookies).expect(401);
+      await request(server).get('/api/auth/me').set('Cookie', cookies).expect(401);
 
-      await request(app)
+      await request(server)
         .post('/api/auth/login')
         .send({ email: BARBER_EMAIL, password: 'a-brand-new-password' })
         .expect(200);
@@ -447,7 +461,7 @@ describe.skipIf(!reachable)('auth', () => {
     it('rejects a too-short new password', async () => {
       const { cookies, csrfToken } = await signIn(BARBER_EMAIL);
 
-      await request(app)
+      await request(server)
         .post('/api/auth/change-password')
         .set('Cookie', cookies)
         .set(CSRF_HEADER, csrfToken)
