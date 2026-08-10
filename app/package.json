@@ -3,7 +3,7 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "Francis Cutz staff app \u2014 admin and barber, authenticated",
+  "description": "Francis Cutz staff app — admin and barber, authenticated",
   "scripts": {
     "dev": "nuxt dev --port 3000",
     "build": "nuxt build",
@@ -20,11 +20,13 @@
     "nuxt": "4.5.2",
     "pinia": "4.0.2",
     "primevue": "5.0.0",
+    "qrcode": "^1.5.4",
     "socket.io-client": "^4.8.3",
     "vue": "3.5.41"
   },
   "devDependencies": {
     "@primevue/nuxt-module": "5.0.0",
+    "@types/qrcode": "^1.5.6",
     "typescript": "5.9.3",
     "vue-tsc": "3.3.9"
   }

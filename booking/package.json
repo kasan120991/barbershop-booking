@@ -16,6 +16,7 @@
     "@francis/theme": "workspace:*",
     "@primeicons/vue": "8.0.0",
     "@primeuix/themes": "3.0.0",
+    "@stripe/stripe-js": "^9.13.0",
     "nuxt": "4.5.2",
     "primevue": "5.0.0",
     "socket.io-client": "^4.8.3",

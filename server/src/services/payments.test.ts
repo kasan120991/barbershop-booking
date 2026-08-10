@@ -13,7 +13,13 @@ import { afterAll, beforeEach, describe, expect, it } from 'vitest';
 
 import { prisma } from '../lib/prisma.js';
 import { hashPassword } from './passwords.js';
-import { listPayableTickets, recordCashPayment } from './payments.js';
+import {
+  getCheckoutByToken,
+  listPayableTickets,
+  recordCashPayment,
+  startCardCheckout,
+  voidPayment,
+} from './payments.js';
 
 const DOMAIN = '@payments.test';
 const PHONE = '+15555550701';
@@ -42,7 +48,7 @@ async function cleanup() {
   await prisma.user.deleteMany({ where: { email: { contains: DOMAIN } } });
 }
 
-async function makeBarber(name: string) {
+async function makeBarber(name: string, connect: { chargesEnabled?: boolean } = {}) {
   const user = await prisma.user.create({
     data: {
       email: `${name.toLowerCase()}${DOMAIN}`,
@@ -54,7 +60,16 @@ async function makeBarber(name: string) {
   });
 
   return prisma.barber.create({
-    data: { userId: user.id, displayName: name, slug: `${name.toLowerCase()}-${user.id}` },
+    data: {
+      userId: user.id,
+      displayName: name,
+      slug: `${name.toLowerCase()}-${user.id}`,
+      // Only set when the test needs a chair Stripe has cleared; `startCardCheckout`
+      // refuses everything else.
+      ...(connect.chargesEnabled === true
+        ? { stripeAccountId: `acct_paytest_${user.id}`, chargesEnabled: true }
+        : {}),
+    },
   });
 }
 
@@ -295,5 +310,171 @@ describe.skipIf(!reachable)('listPayableTickets', () => {
     await seatedWalkIn({ status: 'WAITING' });
 
     expect(await listPayableTickets(barberId, today())).toHaveLength(0);
+  });
+});
+
+/**
+ * Opening a card checkout.
+ *
+ * None of this touches Stripe — the PaymentIntent is created later, when the customer has
+ * chosen a tip — so the guards are all testable directly. They are also the whole point:
+ * a QR that cannot work, or a cut charged twice, both start here.
+ */
+describe.skipIf(!reachable)('startCardCheckout', () => {
+  beforeEach(seed);
+
+  const today = (): string =>
+    DateTime.now().setZone('America/New_York').toFormat('yyyy-MM-dd');
+
+  /** `seed` builds Ana without a Stripe account; this gives her a cleared one. */
+  async function clearedChair() {
+    await prisma.barber.update({
+      where: { id: barberId },
+      data: { stripeAccountId: `acct_paytest_${barberId}`, chargesEnabled: true },
+    });
+  }
+
+  it('refuses a chair Stripe has not cleared', async () => {
+    const entry = await seatedWalkIn();
+
+    await expect(
+      startCardCheckout({ barberId, queueEntryId: entry.id, startedByUserId: staffUserId }),
+    ).rejects.toThrow(/cannot take card payments yet/i);
+
+    // Nothing created — a refused checkout must not leave a row blocking the ticket.
+    expect(await prisma.payment.count({ where: { queueEntryId: entry.id } })).toBe(0);
+  });
+
+  it('opens a pending payment and returns a token exactly once', async () => {
+    await clearedChair();
+    const entry = await seatedWalkIn();
+
+    const started = await startCardCheckout({
+      barberId,
+      queueEntryId: entry.id,
+      startedByUserId: staffUserId,
+    });
+
+    expect(started.amountCents).toBe(LIVE_PRICE);
+    expect(started.checkoutToken).toHaveLength(43);
+
+    const payment = await prisma.payment.findUnique({ where: { id: started.paymentId } });
+    expect(payment?.status).toBe(PAYMENT_STATUS.PENDING);
+    expect(payment?.method).toBe('CARD_ONLINE');
+    expect(payment?.tipCents).toBe(0);
+    // Only the hash is stored — the plaintext never goes to the database.
+    expect(payment?.checkoutTokenHash).not.toBeNull();
+    expect(payment?.checkoutTokenHash).not.toBe(started.checkoutToken);
+  });
+
+  /** The window this closes: the customer is fetching their phone, the barber takes cash. */
+  it('refuses cash while a card checkout is open', async () => {
+    await clearedChair();
+    const entry = await seatedWalkIn();
+
+    await startCardCheckout({ barberId, queueEntryId: entry.id, startedByUserId: staffUserId });
+
+    await expect(
+      recordCashPayment({
+        barberId,
+        queueEntryId: entry.id,
+        tipCents: 0,
+        recordedByUserId: staffUserId,
+      }),
+    ).rejects.toThrow(/card payment is already waiting/i);
+  });
+
+  it('refuses a second checkout on the same cut', async () => {
+    await clearedChair();
+    const entry = await seatedWalkIn();
+
+    const input = { barberId, queueEntryId: entry.id, startedByUserId: staffUserId };
+    await startCardCheckout(input);
+
+    await expect(startCardCheckout(input)).rejects.toThrow(/already waiting/i);
+    expect(await prisma.payment.count({ where: { queueEntryId: entry.id } })).toBe(1);
+  });
+
+  /**
+   * The ticket stays listed while a card is pending — annotated, not hidden. Hiding it
+   * would remove the only route to the Cancel action.
+   */
+  it('keeps the ticket on the list, annotated', async () => {
+    await clearedChair();
+    const entry = await seatedWalkIn();
+
+    const started = await startCardCheckout({
+      barberId,
+      queueEntryId: entry.id,
+      startedByUserId: staffUserId,
+    });
+
+    const tickets = await listPayableTickets(barberId, today());
+    expect(tickets).toHaveLength(1);
+    expect(tickets[0]?.pendingPayment).toEqual({
+      id: started.paymentId,
+      totalCents: LIVE_PRICE,
+    });
+  });
+
+  it('shows the payer the cut but never the client', async () => {
+    await clearedChair();
+    const entry = await seatedWalkIn();
+
+    const started = await startCardCheckout({
+      barberId,
+      queueEntryId: entry.id,
+      startedByUserId: staffUserId,
+    });
+
+    const view = await getCheckoutByToken(started.checkoutToken);
+
+    expect(view.barberName).toBe('Ana');
+    expect(view.serviceNames).toEqual([SERVICE_NAME]);
+    expect(view.amountCents).toBe(LIVE_PRICE);
+    // The link gets forwarded. Nothing about the person who had the cut is on it.
+    expect(JSON.stringify(view)).not.toContain('Cash');
+    expect(JSON.stringify(view)).not.toContain('Client');
+  });
+
+  it('refuses an unknown token with the same answer as a wrong one', async () => {
+    await expect(getCheckoutByToken('not-a-real-token')).rejects.toThrow(/not valid/i);
+  });
+
+  it('releases the ticket when the barber cancels', async () => {
+    await clearedChair();
+    const entry = await seatedWalkIn();
+
+    const started = await startCardCheckout({
+      barberId,
+      queueEntryId: entry.id,
+      startedByUserId: staffUserId,
+    });
+
+    const voided = await voidPayment(started.paymentId);
+    expect(voided.status).toBe(PAYMENT_STATUS.VOIDED);
+    // A dead link must stop resolving.
+    expect(voided.checkoutTokenHash).toBeNull();
+
+    // And the cut can now be settled the other way.
+    const cash = await recordCashPayment({
+      barberId,
+      queueEntryId: entry.id,
+      tipCents: 0,
+      recordedByUserId: staffUserId,
+    });
+    expect(cash.status).toBe(PAYMENT_STATUS.SUCCEEDED);
+  });
+
+  it('refuses to void a payment that is not waiting on a card', async () => {
+    const entry = await seatedWalkIn();
+    const cash = await recordCashPayment({
+      barberId,
+      queueEntryId: entry.id,
+      tipCents: 0,
+      recordedByUserId: staffUserId,
+    });
+
+    await expect(voidPayment(cash.id)).rejects.toThrow(/still waiting on a card/i);
   });
 });

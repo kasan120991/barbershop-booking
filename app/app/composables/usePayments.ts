@@ -15,7 +15,13 @@
  * from one list and adds it to the other, and hand-merging both is how they drift apart.
  */
 
-import type { PayableTicketDto, PaymentDto, RecordCashPaymentRequest } from '@francis/shared';
+import type {
+  CardCheckoutDto,
+  PayableTicketDto,
+  PaymentDto,
+  RecordCashPaymentRequest,
+  StartCardCheckoutRequest,
+} from '@francis/shared';
 
 export function usePayments() {
   const api = useApi();
@@ -51,10 +57,51 @@ export function usePayments() {
     }
   }
 
+  /**
+   * Opens a card checkout and returns the URL to put in front of the customer.
+   *
+   * Refetches, because the ticket does not leave the list — it stays, now carrying a
+   * pending payment, which is what puts the Cancel action on its row.
+   */
+  async function startCardCheckout(input: StartCardCheckoutRequest): Promise<CardCheckoutDto> {
+    saving.value = true;
+    try {
+      const checkout = await api<CardCheckoutDto>('/payments/card-checkout', {
+        method: 'POST',
+        body: input,
+      });
+      await refresh(input.barberId);
+      return checkout;
+    } finally {
+      saving.value = false;
+    }
+  }
+
+  /** Cancels a checkout nobody completed, so the cut can be settled another way. */
+  async function voidPayment(paymentId: string, barberId: string): Promise<void> {
+    saving.value = true;
+    try {
+      await api(`/payments/${paymentId}/void`, { method: 'POST' });
+      await refresh(barberId);
+    } finally {
+      saving.value = false;
+    }
+  }
+
   /** Everything taken today, tips included — the number a barber checks at closing. */
   const takenTodayCents = computed(() =>
     payments.value.reduce((total, payment) => total + payment.totalCents, 0),
   );
 
-  return { tickets, payments, loading, saving, refresh, recordCash, takenTodayCents };
+  return {
+    tickets,
+    payments,
+    loading,
+    saving,
+    refresh,
+    recordCash,
+    startCardCheckout,
+    voidPayment,
+    takenTodayCents,
+  };
 }

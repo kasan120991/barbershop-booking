@@ -610,6 +610,14 @@ model Payment {
   stripeFeeCents        Int?
   netCents              Int?
 
+  /// SHA-256 of the checkout link token, set only while a card payment awaits the customer.
+  ///
+  /// Hashed rather than stored raw — unlike `Appointment.cancelToken`, which is a plaintext
+  /// cuid only because Prisma's default made it free. This one is generated in code anyway,
+  /// so a database dump hands out no working payment links. Cleared once the payment
+  /// settles or is voided, because a spent link should stop resolving.
+  checkoutTokenHash     String? @unique
+
   failureReason    String?
   recordedByUserId String?
   paidAt           DateTime? @db.DateTime(3)

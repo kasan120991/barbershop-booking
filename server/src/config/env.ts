@@ -73,6 +73,20 @@ const envSchema = z.object({
    * deployed endpoint has its own, from the Dashboard.
    */
   STRIPE_WEBHOOK_SECRET: z.string().min(1).optional(),
+
+  /**
+   * Stripe publishable key, for the Payment Element on the customer's checkout page.
+   *
+   * Lives here rather than in `booking`'s runtime config on purpose. The checkout
+   * endpoint already has to tell the browser which connected account to initialise
+   * Stripe.js against, so handing back the key beside it keeps the pair in one file —
+   * a second copy in a second app is a copy that can drift out of step with the secret
+   * key it has to match, and the symptom of that is a checkout page that mounts and
+   * then rejects every card.
+   *
+   * Publishable by definition: it ships to every browser and is not a secret.
+   */
+  STRIPE_PUBLISHABLE_KEY: z.string().min(1).optional(),
 })
   /**
    * A live key in a dev shell would take real money on a real barber's account from a

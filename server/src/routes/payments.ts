@@ -1,31 +1,53 @@
 /**
  * Taking payment.
  *
- * Both routes are `requireBarberSelfOrAdmin`: a barber settles their own tickets and
- * reads their own takings, an admin may do either for anyone, and one barber can never
- * see another's day. Rent is settled off exactly these numbers.
+ * Two audiences, split by authentication. The staff routes are `requireBarberSelfOrAdmin`:
+ * a barber settles their own tickets and reads their own takings, an admin may do either
+ * for anyone, and one barber can never see another's day. Rent is settled off exactly
+ * these numbers.
  *
- * There is no device path. A kiosk stands unattended by the door — it may join the queue
- * and read the board, and it must never be able to record that money changed hands.
+ * The two `/payments/checkout/:token` routes are unauthenticated, because the person
+ * paying has no account here — the token is the credential, exactly as it is on the
+ * cancel link.
+ *
+ * There is no device path anywhere in this file. A kiosk stands unattended by the door —
+ * it may join the queue and read the board, and it must never be able to record that
+ * money changed hands.
  */
 
 import {
+  createCheckoutIntentRequestSchema,
   recordCashPaymentRequestSchema,
+  startCardCheckoutRequestSchema,
+  type CardCheckoutDto,
+  type CheckoutIntentDto,
+  type CheckoutViewDto,
   type PayableTicketDto,
   type PaymentDto,
 } from '@francis/shared';
 import { Router, type Request } from 'express';
 
-import { UnauthenticatedError } from '../lib/errors.js';
+import { env } from '../config/env.js';
+import { InternalError, UnauthenticatedError } from '../lib/errors.js';
+import { pathParam } from '../lib/http.js';
 import { limiter } from '../lib/rate-limit.js';
 import { toPaymentDto } from '../mappers/payment.js';
 import { toPayableTicketDto } from '../mappers/ticket.js';
-import { requireBarberSelfOrAdmin } from '../middleware/require-auth.js';
+import {
+  assertBarberSelfOrAdmin,
+  requireBarberSelfOrAdmin,
+  requireUser,
+} from '../middleware/require-auth.js';
 import { auditContext, recordAudit } from '../services/audit.js';
 import {
+  createCheckoutIntent,
+  getCheckoutByToken,
+  getPaymentOwner,
   listPayableTickets,
   listPaymentsForShopDay,
   recordCashPayment,
+  startCardCheckout,
+  voidPayment,
 } from '../services/payments.js';
 
 export const paymentRouter: Router = Router();
@@ -90,6 +112,83 @@ paymentRouter.post(
 );
 
 /**
+ * Opens a card checkout and hands back the URL the staff screen turns into a QR code.
+ *
+ * `POST` because it has side effects — it creates the pending payment that blocks the
+ * ticket. The URL is built here from `env.BOOKING_ORIGIN` and never from anything the
+ * client sent, the same rule the Connect onboarding links follow.
+ */
+paymentRouter.post(
+  '/payments/card-checkout',
+  recordLimit,
+  requireBarberSelfOrAdmin(bodyBarberId),
+  async (req, res) => {
+    if (req.auth?.kind !== 'user') throw new UnauthenticatedError();
+
+    const input = startCardCheckoutRequestSchema.parse(req.body);
+
+    const started = await startCardCheckout({
+      barberId: input.barberId,
+      appointmentId: input.appointmentId,
+      queueEntryId: input.queueEntryId,
+      startedByUserId: req.auth.userId,
+    });
+
+    await recordAudit(auditContext(req), {
+      action: 'payment.checkout_started',
+      entityType: 'Payment',
+      entityId: started.paymentId,
+      // Never the token. It is a live bearer credential for as long as the payment is
+      // open, and the audit trail is not a place to keep one.
+      after: {
+        barberId: input.barberId,
+        amountCents: started.amountCents,
+        appointmentId: input.appointmentId ?? null,
+        queueEntryId: input.queueEntryId ?? null,
+      },
+    });
+
+    const body: CardCheckoutDto = {
+      paymentId: started.paymentId,
+      checkoutUrl: `${env.BOOKING_ORIGIN}/pay/${started.checkoutToken}`,
+      amountCents: started.amountCents,
+    };
+
+    res.status(201).json(body);
+  },
+);
+
+/**
+ * Cancels a card checkout nobody completed, freeing the cut to be paid another way.
+ *
+ * The guard resolves the barber from the payment rather than the body — the caller is
+ * naming a payment, and letting them also name whose it is would make the check circular.
+ */
+paymentRouter.post(
+  '/payments/:paymentId/void',
+  recordLimit,
+  requireUser,
+  async (req, res) => {
+    const paymentId = pathParam(req, 'paymentId');
+
+    // Whose chair this is, before deciding whether the caller may touch it.
+    assertBarberSelfOrAdmin(req, await getPaymentOwner(paymentId));
+
+    const payment = await voidPayment(paymentId);
+
+    await recordAudit(auditContext(req), {
+      action: 'payment.voided',
+      entityType: 'Payment',
+      entityId: paymentId,
+      after: { barberId: payment.barberId, amountCents: payment.amountCents },
+    });
+
+    const body: PaymentDto = toPaymentDto(payment);
+    res.json(body);
+  },
+);
+
+/**
  * What still owes money on this chair today.
  *
  * Separate from `GET .../payments` on purpose: that one answers "what have I taken", this
@@ -110,6 +209,46 @@ paymentRouter.get(
     res.json({ tickets: body });
   },
 );
+
+/**
+ * The customer's half. Both routes are **unauthenticated** — the token is the credential,
+ * exactly like the cancel link, and the person holding it has no account here.
+ *
+ * Rate-limited by IP because they are the only public write path in this file. Guessing a
+ * 256-bit token is not the threat; hammering the endpoint is.
+ */
+const checkoutLimit = limiter({
+  windowMs: 15 * 60 * 1000,
+  limit: 60,
+  message: 'Too many attempts. Wait a moment and try again.',
+});
+
+paymentRouter.get('/payments/checkout/:token', checkoutLimit, async (req, res) => {
+  const view = await getCheckoutByToken(pathParam(req, 'token'));
+
+  if (env.STRIPE_PUBLISHABLE_KEY === undefined) {
+    throw new InternalError('STRIPE_PUBLISHABLE_KEY is not set — checkout cannot render.');
+  }
+
+  const body: CheckoutViewDto = {
+    ...view,
+    // Travels with the account it must be initialised against: on a direct charge the
+    // barber's account is the merchant, so Stripe.js has to be pointed at it.
+    publishableKey: env.STRIPE_PUBLISHABLE_KEY,
+    stripeAccountId: view.stripeAccountId,
+  };
+
+  res.json(body);
+});
+
+paymentRouter.post('/payments/checkout/:token/intent', checkoutLimit, async (req, res) => {
+  const { tipCents } = createCheckoutIntentRequestSchema.parse(req.body);
+
+  const intent = await createCheckoutIntent(pathParam(req, 'token'), tipCents);
+
+  const body: CheckoutIntentDto = intent;
+  res.status(201).json(body);
+});
 
 paymentRouter.get(
   '/barbers/:barberId/payments',

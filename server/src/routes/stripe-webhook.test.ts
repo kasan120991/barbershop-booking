@@ -31,6 +31,7 @@ afterAll(() => {
 const DOMAIN = '@webhook.test';
 const EVENT_PREFIX = 'evt_whtest_';
 const ACCOUNT_ID = 'acct_whtest_known';
+const PAYMENT_ID = 'pay_whtest_1';
 
 const passwordHash = await hashPassword('FrancisCutz!2026');
 
@@ -43,9 +44,13 @@ let barberId: string;
 
 async function cleanup() {
   await prisma.webhookEvent.deleteMany({ where: { stripeEventId: { startsWith: EVENT_PREFIX } } });
-  if (barberId !== undefined) {
-    await prisma.auditLog.deleteMany({ where: { entityId: barberId } });
-  }
+  // Payments hold a required barberId, so they go before the barber they point at.
+  await prisma.payment.deleteMany({ where: { barber: { user: { email: { contains: DOMAIN } } } } });
+  // Audit rows are keyed by the entity they describe, so both entities have to be named —
+  // the payment ones outlive the payment row and would otherwise accumulate across tests.
+  await prisma.auditLog.deleteMany({
+    where: { entityId: { in: [barberId ?? '', PAYMENT_ID] } },
+  });
   await prisma.barber.deleteMany({ where: { user: { email: { contains: DOMAIN } } } });
   await prisma.userRole.deleteMany({ where: { user: { email: { contains: DOMAIN } } } });
   await prisma.user.deleteMany({ where: { email: { contains: DOMAIN } } });
@@ -259,5 +264,214 @@ describe.skipIf(!reachable)('stripe webhook', () => {
 
     const barber = await prisma.barber.findUnique({ where: { id: barberId } });
     expect(barber?.chargesEnabled).toBe(false);
+  });
+});
+
+/**
+ * Settling a card payment.
+ *
+ * This is what actually marks money as received — not the browser coming back, which a
+ * customer can skip entirely by closing the tab. Every fixture below sets
+ * `latest_charge: null` so the handler takes no network trip for the balance transaction;
+ * the fee is verified live instead, against a real sandbox charge.
+ */
+describe.skipIf(!reachable)('payment_intent events', () => {
+  const INTENT_ID = 'pi_whtest_1';
+
+  beforeEach(async () => {
+    await seed();
+    await prisma.payment.create({
+      data: {
+        id: PAYMENT_ID,
+        barberId,
+        method: 'CARD_ONLINE',
+        status: 'PENDING',
+        amountCents: 4500,
+        tipCents: 810,
+        totalCents: 5310,
+        stripeAccountId: ACCOUNT_ID,
+        stripePaymentIntentId: INTENT_ID,
+        checkoutTokenHash: 'whtest-token-hash',
+      },
+    });
+  });
+
+  function intentPayload(eventId: string, type: string, intentId = INTENT_ID, extra = {}): string {
+    return JSON.stringify({
+      id: eventId,
+      object: 'event',
+      api_version: '2025-01-01',
+      created: 1_760_000_000,
+      livemode: false,
+      pending_webhooks: 0,
+      request: { id: null, idempotency_key: null },
+      type,
+      account: ACCOUNT_ID,
+      data: {
+        object: {
+          id: intentId,
+          object: 'payment_intent',
+          amount: 5310,
+          currency: 'usd',
+          // Null so the handler does not reach for a balance transaction over the network.
+          latest_charge: null,
+          ...extra,
+        },
+      },
+    });
+  }
+
+  it('settles the payment', async () => {
+    const payload = intentPayload(`${EVENT_PREFIX}paid`, 'payment_intent.succeeded');
+
+    const response = await post(payload, sign(payload)).expect(200);
+    expect(response.body).toMatchObject({ handled: true });
+
+    const payment = await prisma.payment.findUnique({ where: { id: PAYMENT_ID } });
+    expect(payment?.status).toBe('SUCCEEDED');
+    expect(payment?.paidAt).not.toBeNull();
+    // The link is spent and must stop resolving.
+    expect(payment?.checkoutTokenHash).toBeNull();
+
+    const audits = await prisma.auditLog.count({
+      where: { entityId: PAYMENT_ID, action: 'payment.recorded' },
+    });
+    expect(audits).toBe(1);
+  });
+
+  it('is idempotent when the same success is delivered twice', async () => {
+    const payload = intentPayload(`${EVENT_PREFIX}paid2`, 'payment_intent.succeeded');
+    const signature = sign(payload);
+
+    await post(payload, signature).expect(200);
+    const second = await post(payload, signature).expect(200);
+
+    expect(second.body).toMatchObject({ duplicate: true });
+    expect(
+      await prisma.auditLog.count({
+        where: { entityId: PAYMENT_ID, action: 'payment.recorded' },
+      }),
+    ).toBe(1);
+  });
+
+  /**
+   * A *different* event id carrying the same success — which Stripe does produce — must
+   * also not double-count. The `WebhookEvent` row cannot help here; the handler's own
+   * status check is what does.
+   */
+  it('does not re-settle a payment that is already succeeded', async () => {
+    const first = intentPayload(`${EVENT_PREFIX}paidA`, 'payment_intent.succeeded');
+    const again = intentPayload(`${EVENT_PREFIX}paidB`, 'payment_intent.succeeded');
+
+    await post(first, sign(first)).expect(200);
+    await post(again, sign(again)).expect(200);
+
+    expect(
+      await prisma.auditLog.count({
+        where: { entityId: PAYMENT_ID, action: 'payment.recorded' },
+      }),
+    ).toBe(1);
+  });
+
+  /**
+   * A decline leaves the row PENDING on purpose. The intent survives it — the customer
+   * can try another card on the same link — so releasing the ticket here would let the
+   * barber take cash while a retry is still in flight.
+   */
+  it('records a decline without releasing the ticket', async () => {
+    const payload = intentPayload(`${EVENT_PREFIX}declined`, 'payment_intent.payment_failed', INTENT_ID, {
+      last_payment_error: { code: 'card_declined', message: 'Your card was declined.' },
+    });
+
+    await post(payload, sign(payload)).expect(200);
+
+    const payment = await prisma.payment.findUnique({ where: { id: PAYMENT_ID } });
+    expect(payment?.status).toBe('PENDING');
+    expect(payment?.failureReason).toBe('Your card was declined.');
+    // Still resolvable, so the customer can try another card on the same link.
+    expect(payment?.checkoutTokenHash).not.toBeNull();
+  });
+
+  /**
+   * The fee arrives after the money does.
+   *
+   * Verified live: settling from `payment_intent.succeeded` alone left `stripeFeeCents`
+   * null, and the same charge carried a fee a few seconds later on `charge.updated`. The
+   * balance transaction is expanded in this fixture so the handler takes no network trip.
+   */
+  it('backfills the Stripe fee from charge.updated', async () => {
+    const chargeId = 'ch_whtest_1';
+    await prisma.payment.update({
+      where: { id: PAYMENT_ID },
+      data: { status: 'SUCCEEDED', stripeChargeId: chargeId },
+    });
+
+    const payload = JSON.stringify({
+      id: `${EVENT_PREFIX}fee`,
+      object: 'event',
+      api_version: '2025-01-01',
+      created: 1_760_000_000,
+      livemode: false,
+      pending_webhooks: 0,
+      request: { id: null, idempotency_key: null },
+      type: 'charge.updated',
+      account: ACCOUNT_ID,
+      data: {
+        object: {
+          id: chargeId,
+          object: 'charge',
+          balance_transaction: { id: 'txn_whtest_1', object: 'balance_transaction', fee: 184, net: 5126 },
+        },
+      },
+    });
+
+    await post(payload, sign(payload)).expect(200);
+
+    const payment = await prisma.payment.findUnique({ where: { id: PAYMENT_ID } });
+    expect(payment?.stripeFeeCents).toBe(184);
+    // What actually reaches the barber, and what their payout is made of.
+    expect(payment?.netCents).toBe(5126);
+  });
+
+  /** Several `charge.updated` land per charge; only the first has anything to do. */
+  it('leaves an already-recorded fee alone', async () => {
+    const chargeId = 'ch_whtest_2';
+    await prisma.payment.update({
+      where: { id: PAYMENT_ID },
+      data: { status: 'SUCCEEDED', stripeChargeId: chargeId, stripeFeeCents: 100, netCents: 5210 },
+    });
+
+    const payload = JSON.stringify({
+      id: `${EVENT_PREFIX}fee2`,
+      object: 'event',
+      api_version: '2025-01-01',
+      created: 1_760_000_000,
+      livemode: false,
+      pending_webhooks: 0,
+      request: { id: null, idempotency_key: null },
+      type: 'charge.updated',
+      account: ACCOUNT_ID,
+      data: {
+        object: {
+          id: chargeId,
+          object: 'charge',
+          balance_transaction: { id: 'txn_whtest_2', object: 'balance_transaction', fee: 999, net: 1 },
+        },
+      },
+    });
+
+    await post(payload, sign(payload)).expect(200);
+
+    const payment = await prisma.payment.findUnique({ where: { id: PAYMENT_ID } });
+    expect(payment?.stripeFeeCents).toBe(100);
+  });
+
+  it('acknowledges an intent it holds no payment for', async () => {
+    const payload = intentPayload(`${EVENT_PREFIX}stranger`, 'payment_intent.succeeded', 'pi_not_ours');
+
+    await post(payload, sign(payload)).expect(200);
+
+    const payment = await prisma.payment.findUnique({ where: { id: PAYMENT_ID } });
+    expect(payment?.status).toBe('PENDING');
   });
 });

@@ -79,7 +79,18 @@ export type AuditAction =
    * story on Stripe, and cash leaves none — this row is the only record that the drawer
    * and the day's total should agree, and who says so.
    */
-  | 'payment.recorded';
+  | 'payment.recorded'
+  /**
+   * The card half. `checkout_started` is not a money movement yet — it is the moment a
+   * ticket stopped being settleable any other way, which is exactly what someone will be
+   * asking about when a cut appears to have been paid for twice, or not at all.
+   *
+   * `payment.failed` is written from the webhook, so it has no actor. That is honest: a
+   * decline is Stripe's answer, not anybody's action.
+   */
+  | 'payment.checkout_started'
+  | 'payment.voided'
+  | 'payment.failed';
 
 export interface AuditInput {
   action: AuditAction;

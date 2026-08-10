@@ -22,6 +22,7 @@ import {
   type PayableTicketDto,
   type RecordCashPaymentRequest,
 } from '@francis/shared';
+import QRCode from 'qrcode';
 
 useHead({ title: 'Take Payment — Francis Cutz' });
 
@@ -102,6 +103,94 @@ function finishedLabel(ticket: PayableTicketDto): string {
   })}`;
 }
 
+/**
+ * The open card checkout, if there is one.
+ *
+ * Held on the page rather than in the store: it is a QR code being shown to one person
+ * standing at the counter, and it stops mattering the moment they walk away.
+ */
+const checkout = ref<{ paymentId: string; url: string; qr: string } | null>(null);
+
+/** Which of the two ids the current selection needs, so both paths agree on it. */
+function ticketRef(ticket: PayableTicketDto) {
+  return ticket.kind === TICKET_KIND.APPOINTMENT
+    ? { appointmentId: ticket.id }
+    : { queueEntryId: ticket.id };
+}
+
+async function startCard() {
+  const ticket = selected.value;
+  const chair = barberId.value;
+  if (ticket === null || chair === null) return;
+
+  try {
+    const started = await payments.startCardCheckout({ barberId: chair, ...ticketRef(ticket) });
+
+    // Rendered client-side; the URL never needs to leave the tablet to become a QR.
+    const qr = await QRCode.toDataURL(started.checkoutUrl, {
+      width: 512,
+      margin: 1,
+      // A QR needs a light quiet zone to scan reliably, even on a dark screen.
+      color: { dark: '#17171b', light: '#ffffff' },
+    });
+
+    checkout.value = { paymentId: started.paymentId, url: started.checkoutUrl, qr };
+  } catch (error) {
+    notifyApiFailure(error, 'Could not start a card payment.');
+  }
+}
+
+async function cancelCheckout(paymentId: string) {
+  const chair = barberId.value;
+  if (chair === null) return;
+
+  try {
+    await payments.voidPayment(paymentId, chair);
+    if (checkout.value?.paymentId === paymentId) checkout.value = null;
+    notifySuccess('Card payment cancelled', 'This cut can be settled another way now.');
+  } catch (error) {
+    notifyApiFailure(error, 'Could not cancel that payment.');
+  }
+}
+
+/**
+ * The QR panel closes itself once the payment lands.
+ *
+ * The webhook settles the row and the poll below picks it up, so the barber sees the cut
+ * clear without touching anything — which is the only signal they get that a customer
+ * standing in front of them actually paid.
+ */
+watch(
+  () => payments.tickets.value,
+  (list) => {
+    const open = checkout.value;
+    if (open === null) return;
+
+    const stillPending = list.some((ticket) => ticket.pendingPayment?.id === open.paymentId);
+    if (!stillPending) {
+      checkout.value = null;
+      notifySuccess('Card payment received', 'That cut is settled.');
+    }
+  },
+);
+
+/** Only while a QR is on screen. Off the rest of the time — nothing else here changes. */
+let poll: ReturnType<typeof setInterval> | undefined;
+
+watch(checkout, (open) => {
+  if (poll !== undefined) clearInterval(poll);
+  poll = undefined;
+  if (open === null || barberId.value === null) return;
+
+  poll = setInterval(() => {
+    if (barberId.value !== null) void payments.refresh(barberId.value);
+  }, 3000);
+});
+
+onUnmounted(() => {
+  if (poll !== undefined) clearInterval(poll);
+});
+
 async function confirmCash() {
   const ticket = selected.value;
   const chair = barberId.value;
@@ -110,9 +199,7 @@ async function confirmCash() {
   const body: RecordCashPaymentRequest = {
     barberId: chair,
     tipCents: tipCents.value,
-    ...(ticket.kind === TICKET_KIND.APPOINTMENT
-      ? { appointmentId: ticket.id }
-      : { queueEntryId: ticket.id }),
+    ...ticketRef(ticket),
   };
 
   try {
@@ -176,14 +263,60 @@ async function confirmCash() {
               </span>
             </span>
             <span class="amt">{{ formatCents(ticket.amountCents) }}</span>
-            <span v-if="ticket.finishedAt === null" class="chip chair">In chair</span>
+            <!-- A cut awaiting a card stays listed, because cancelling it is the only way
+                 out and the row is where that action lives. -->
+            <span v-if="ticket.pendingPayment" class="chip waiting">Waiting on card</span>
+            <span v-else-if="ticket.finishedAt === null" class="chip chair">In chair</span>
           </button>
         </section>
 
-        <section v-if="selected" class="card pad">
+        <!-- A QR on screen replaces the pad entirely: there is one thing happening, and
+             it is the customer's phone. -->
+        <section v-if="checkout" class="card qr">
+          <div class="qr-frame">
+            <img :src="checkout.qr" alt="Scan to pay" width="220" height="220" >
+          </div>
+          <div class="qr-side">
+            <h3>Scan to pay</h3>
+            <p class="body">
+              The customer adds their own tip on their phone, then pays. This closes by
+              itself once the payment lands.
+            </p>
+            <p class="hint break">{{ checkout.url }}</p>
+            <Button
+              label="Cancel Card Payment"
+              size="small"
+              variant="outlined"
+              severity="danger"
+              :loading="payments.saving.value"
+              @click="cancelCheckout(checkout.paymentId)"
+            />
+          </div>
+        </section>
+
+        <!-- A cut already waiting on a card offers only the way out of that. -->
+        <section v-else-if="selected?.pendingPayment" class="card pad">
           <div class="pad-head">
             <span class="label">{{ selected.clientName }} · {{ selected.serviceNames.join(' · ') }}</span>
-            <span class="chip cash">Cash</span>
+            <span class="chip waiting">Waiting on card</span>
+          </div>
+          <p class="body">
+            A card payment for {{ formatCents(selected.pendingPayment.totalCents) }} is open on
+            this cut. Cancel it to take cash instead.
+          </p>
+          <Button
+            label="Cancel Card Payment"
+            size="small"
+            variant="outlined"
+            severity="danger"
+            :loading="payments.saving.value"
+            @click="cancelCheckout(selected.pendingPayment.id)"
+          />
+        </section>
+
+        <section v-else-if="selected" class="card pad">
+          <div class="pad-head">
+            <span class="label">{{ selected.clientName }} · {{ selected.serviceNames.join(' · ') }}</span>
           </div>
 
           <span class="label">Tip</span>
@@ -237,11 +370,22 @@ async function confirmCash() {
             </div>
           </div>
 
-          <Button
-            label="Confirm Cash Payment"
-            :loading="payments.saving.value"
-            @click="confirmCash"
-          />
+          <!-- Two ways to be paid, side by side. The tip pad above governs cash only:
+               on a card the person holding it chooses their own tip, on their own phone. -->
+          <div class="methods">
+            <Button
+              label="Confirm Cash Payment"
+              :loading="payments.saving.value"
+              @click="confirmCash"
+            />
+            <Button
+              label="Pay by Card"
+              variant="outlined"
+              :loading="payments.saving.value"
+              @click="startCard"
+            />
+          </div>
+          <p class="hint">On a card, the customer adds their own tip when they pay.</p>
         </section>
       </template>
 
@@ -372,11 +516,68 @@ h2 {
   white-space: nowrap;
 }
 
-.chip.cash,
 .chip.chair {
   color: var(--fc-accent);
   background: var(--fc-accent-wash);
   border-color: transparent;
+}
+
+.chip.waiting {
+  color: var(--fc-ink);
+  border-color: var(--fc-ink-faint);
+}
+
+.methods {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-top: 0.25rem;
+}
+
+.qr {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 1.5rem;
+}
+
+/*
+ * The QR sits on white regardless of the surrounding dark app. A scanner needs the light
+ * quiet zone; rendering it on charcoal is how a code becomes unreliable at arm's length.
+ */
+.qr-frame {
+  background: #ffffff;
+  border-radius: 0.5rem;
+  padding: 0.75rem;
+  line-height: 0;
+  flex: none;
+}
+
+.qr-frame img {
+  display: block;
+  width: 220px;
+  height: 220px;
+}
+
+.qr-side {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.6rem;
+  flex: 1;
+  min-width: 15rem;
+}
+
+.qr-side h3 {
+  margin: 0;
+  font-size: 1rem;
+  font-weight: 600;
+  color: var(--fc-ink);
+}
+
+.break {
+  word-break: break-all;
+  font-size: 0.75rem;
 }
 
 .pad {

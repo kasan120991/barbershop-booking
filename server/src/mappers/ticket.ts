@@ -19,5 +19,6 @@ export function toPayableTicketDto(ticket: PayableTicket): PayableTicketDto {
     amountCents: ticket.amountCents,
     finishedAt: ticket.finishedAt?.toISOString() ?? null,
     status: ticket.status,
+    pendingPayment: ticket.pendingPayment,
   };
 }

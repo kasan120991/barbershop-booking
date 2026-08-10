@@ -12,9 +12,12 @@
  * it; each handler below is additionally written to be re-runnable on its own.
  */
 
+import { PAYMENT_STATUS } from '@francis/shared';
 import type Stripe from 'stripe';
 
 import { logger } from '../lib/logger.js';
+import { prisma } from '../lib/prisma.js';
+import { stripe } from '../lib/stripe.js';
 import { recordAudit } from './audit.js';
 import { applyAccountUpdate } from './connect.js';
 
@@ -22,7 +25,13 @@ import { applyAccountUpdate } from './connect.js';
  * Events we act on. Anything else is still recorded and acknowledged — see the note in
  * the route. Adding a type here is the only change needed to start handling it.
  */
-const HANDLED = new Set<string>(['account.updated']);
+const HANDLED = new Set<string>([
+  'account.updated',
+  'payment_intent.succeeded',
+  'payment_intent.payment_failed',
+  // Not a status change — this is where the Stripe fee actually arrives. See below.
+  'charge.updated',
+]);
 
 export function isHandledEventType(type: string): boolean {
   return HANDLED.has(type);
@@ -32,6 +41,18 @@ export async function handleStripeEvent(event: Stripe.Event): Promise<void> {
   switch (event.type) {
     case 'account.updated':
       await onAccountUpdated(event);
+      return;
+
+    case 'payment_intent.succeeded':
+      await onPaymentSucceeded(event);
+      return;
+
+    case 'payment_intent.payment_failed':
+      await onPaymentFailed(event);
+      return;
+
+    case 'charge.updated':
+      await onChargeUpdated(event);
       return;
 
     default:
@@ -78,4 +99,192 @@ async function onAccountUpdated(event: Stripe.AccountUpdatedEvent): Promise<void
     { barberId: result.barberId, state: result.after.state },
     'Connect capabilities updated from webhook',
   );
+}
+
+/**
+ * The event that actually settles a card payment.
+ *
+ * **This, not the browser coming back.** A customer can close the tab on a successful
+ * payment, lose signal, or pay on a phone that then locks — the redirect is a courtesy and
+ * the webhook is the record. Everything that marks money as received happens here.
+ *
+ * Re-runnable: a row already `SUCCEEDED` returns immediately, so a redelivery neither
+ * writes a second audit entry nor re-reads the balance transaction.
+ */
+async function onPaymentSucceeded(event: Stripe.PaymentIntentSucceededEvent): Promise<void> {
+  const intent = event.data.object;
+
+  const payment = await findPaymentByIntent(intent.id);
+  if (payment === null) return;
+
+  if (payment.status === PAYMENT_STATUS.SUCCEEDED) return;
+
+  const settled = await settlePaymentFromIntent(payment.id, intent, event.account);
+
+  await recordAudit(
+    { principal: undefined, ipAddress: null },
+    {
+      action: 'payment.recorded',
+      entityType: 'Payment',
+      entityId: payment.id,
+      after: {
+        barberId: settled.barberId,
+        method: settled.method,
+        amountCents: settled.amountCents,
+        tipCents: settled.tipCents,
+        totalCents: settled.totalCents,
+        stripeFeeCents: settled.stripeFeeCents,
+        netCents: settled.netCents,
+      },
+    },
+  );
+
+  logger.info(
+    { paymentId: payment.id, totalCents: settled.totalCents },
+    'Card payment settled from webhook',
+  );
+}
+
+/**
+ * A declined card.
+ *
+ * The row stays `PENDING` rather than moving to `FAILED`, which looks wrong and is not.
+ * The PaymentIntent survives a decline — the customer can pick another card and try again
+ * on the same link — so releasing the ticket here would open a window where the barber,
+ * seeing it settleable again, takes cash while the retry is still in flight. The failure
+ * reason is recorded, and the barber cancels it if the customer gives up.
+ */
+async function onPaymentFailed(event: Stripe.PaymentIntentPaymentFailedEvent): Promise<void> {
+  const intent = event.data.object;
+
+  const payment = await findPaymentByIntent(intent.id);
+  if (payment === null) return;
+  if (payment.status !== PAYMENT_STATUS.PENDING) return;
+
+  const reason =
+    intent.last_payment_error?.message ?? intent.last_payment_error?.code ?? 'Card declined.';
+
+  await prisma.payment.update({
+    where: { id: payment.id },
+    data: { failureReason: reason },
+  });
+
+  await recordAudit(
+    { principal: undefined, ipAddress: null },
+    {
+      action: 'payment.failed',
+      entityType: 'Payment',
+      entityId: payment.id,
+      after: { barberId: payment.barberId, failureReason: reason },
+    },
+  );
+}
+
+/**
+ * Where the Stripe fee actually comes from.
+ *
+ * `payment_intent.succeeded` fires before the charge's balance transaction exists — the
+ * money is taken, but what Stripe took for taking it is not computed yet. Verified live:
+ * settling from the intent alone left `stripeFeeCents` null, and the same charge carried a
+ * fee of 184 a second later.
+ *
+ * So the fee is backfilled from `charge.updated`, which is precisely the event Stripe
+ * sends when the charge is finalised. It is a no-op once the figures are stored, so
+ * repeated deliveries — and there are several per charge — cost one indexed read.
+ */
+async function onChargeUpdated(event: Stripe.ChargeUpdatedEvent): Promise<void> {
+  const charge = event.data.object;
+
+  const payment = await prisma.payment.findFirst({
+    where: { stripeChargeId: charge.id },
+    select: { id: true, stripeFeeCents: true },
+  });
+
+  if (payment === null || payment.stripeFeeCents !== null) return;
+
+  const fees = await readFees(charge, event.account);
+  if (fees === null) return;
+
+  await prisma.payment.update({ where: { id: payment.id }, data: fees });
+
+  logger.info(
+    { paymentId: payment.id, stripeFeeCents: fees.stripeFeeCents, netCents: fees.netCents },
+    'Stripe fee recorded',
+  );
+}
+
+/**
+ * Reads fee and net off a charge's balance transaction, expanding it if the event only
+ * carried the id. Returns null when it does not exist yet — which is normal, not an error.
+ */
+async function readFees(
+  charge: Stripe.Charge,
+  stripeAccount: string | undefined,
+): Promise<{ stripeFeeCents: number; netCents: number } | null> {
+  const balance = charge.balance_transaction;
+  if (balance === null) return null;
+
+  if (typeof balance !== 'string') {
+    return { stripeFeeCents: balance.fee, netCents: balance.net };
+  }
+
+  if (stripeAccount === undefined) return null;
+
+  try {
+    // Direct charges: the balance transaction lives on the barber's account, not ours.
+    const resolved = await stripe().balanceTransactions.retrieve(balance, undefined, {
+      stripeAccount,
+    });
+    return { stripeFeeCents: resolved.fee, netCents: resolved.net };
+  } catch (error) {
+    logger.warn({ err: error, charge: charge.id }, 'Could not read the balance transaction');
+    return null;
+  }
+}
+
+async function findPaymentByIntent(intentId: string) {
+  const payment = await prisma.payment.findUnique({
+    where: { stripePaymentIntentId: intentId },
+  });
+
+  if (payment === null) {
+    // A sandbox accumulates intents from `stripe trigger` and other experiments, and every
+    // one of them delivers here. Not ours is normal, not an error worth retrying.
+    logger.debug({ intentId }, 'payment_intent event for an unknown intent');
+  }
+
+  return payment;
+}
+
+/**
+ * Writes the settled figures.
+ *
+ * The fee is attempted here and usually is not available yet — see `onChargeUpdated`,
+ * which backfills it. A missing fee is never a reason to hold up recording the payment:
+ * the money moved either way, and the cost of moving it is a detail that arrives late.
+ */
+async function settlePaymentFromIntent(
+  paymentId: string,
+  intent: Stripe.PaymentIntent,
+  stripeAccount: string | undefined,
+) {
+  const charge =
+    typeof intent.latest_charge === 'string' ? null : (intent.latest_charge ?? null);
+  const chargeId =
+    typeof intent.latest_charge === 'string' ? intent.latest_charge : (charge?.id ?? null);
+
+  const fees = charge === null ? null : await readFees(charge, stripeAccount);
+
+  return prisma.payment.update({
+    where: { id: paymentId },
+    data: {
+      status: PAYMENT_STATUS.SUCCEEDED,
+      paidAt: new Date(),
+      stripeChargeId: chargeId,
+      ...(fees ?? {}),
+      failureReason: null,
+      // The link is spent. It must stop resolving.
+      checkoutTokenHash: null,
+    },
+  });
 }

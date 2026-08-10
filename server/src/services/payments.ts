@@ -1,10 +1,10 @@
 /**
  * Recording payment for a finished cut.
  *
- * Cash first, and cash is genuinely simple: it is a row. No Stripe object, no connected
- * account, nothing to reconcile — the money changed hands in the shop and this records
- * that it did. The card path lands next and shares every guard below, which is most of
- * why they live here rather than in the route.
+ * Two methods, one set of guards. Cash is a row and nothing else — the money changed
+ * hands in the shop and this records that it did. A card is a checkout link, a
+ * PaymentIntent on the barber's own account, and a webhook that settles it. They diverge
+ * only after `guardTicket`, which is why that lives here rather than in the routes.
  *
  * Two rules do all the work:
  *
@@ -18,6 +18,7 @@
  */
 
 import {
+  MAX_TIP_CENTS,
   PAYMENT_METHOD,
   PAYMENT_STATUS,
   TICKET_KIND,
@@ -30,8 +31,11 @@ import { DateTime } from 'luxon';
 
 import type { AppointmentStatus, QueueStatus } from '../generated/prisma/enums.js';
 import type { PaymentModel } from '../generated/prisma/models.js';
-import { ConflictError, NotFoundError, ValidationError } from '../lib/errors.js';
+import { ConflictError, InternalError, NotFoundError, ValidationError } from '../lib/errors.js';
+import { logger } from '../lib/logger.js';
 import { prisma } from '../lib/prisma.js';
+import { stripe } from '../lib/stripe.js';
+import { generateToken, hashToken } from '../lib/tokens.js';
 import { getShopSettings } from './catalog.js';
 
 /**
@@ -49,6 +53,20 @@ const SETTLED: readonly PaymentStatusValue[] = [
   PAYMENT_STATUS.PARTIALLY_REFUNDED,
   PAYMENT_STATUS.REFUNDED,
 ];
+
+/**
+ * Statuses that stop a *new* payment being started — `SETTLED` plus `PENDING`.
+ *
+ * Two sets rather than one, and the difference is deliberate. `SETTLED` answers "is this
+ * cut done with", which is what removes it from the barber's list. `BLOCKING` answers
+ * "may another payment begin", which has to include a card checkout nobody has completed
+ * yet: otherwise a customer takes a second to find their phone and the barber, seeing the
+ * ticket still listed, takes the cash as well.
+ *
+ * A `PENDING` row is released by `voidPayment`, never by a timer. Nothing expires on its
+ * own here, so a ticket can only be freed by someone deciding to free it.
+ */
+const BLOCKING: readonly PaymentStatusValue[] = [...SETTLED, PAYMENT_STATUS.PENDING];
 
 /**
  * When a ticket may be paid for.
@@ -141,8 +159,18 @@ async function resolveTicket(input: RecordCashPaymentInput): Promise<ResolvedTic
   throw new ValidationError('Provide exactly one of appointmentId or queueEntryId.');
 }
 
-export async function recordCashPayment(input: RecordCashPaymentInput): Promise<PaymentModel> {
-  const ticket = await resolveTicket(input);
+/**
+ * The guards both payment methods share.
+ *
+ * Cash and card differ only in what happens after this point, so keeping the checks in
+ * one place is what stops the card path quietly growing a weaker version of them.
+ */
+async function guardTicket(input: {
+  barberId: string;
+  appointmentId?: string | undefined;
+  queueEntryId?: string | undefined;
+}): Promise<ResolvedTicket> {
+  const ticket = await resolveTicket(input as RecordCashPaymentInput);
 
   /**
    * The requested barber must be the ticket's barber.
@@ -156,14 +184,26 @@ export async function recordCashPayment(input: RecordCashPaymentInput): Promise<
     throw new ValidationError('That ticket belongs to a different barber.');
   }
 
-  const alreadyPaid = await prisma.payment.findFirst({
-    where: { status: { in: [...SETTLED] }, ...ticket.ticketFilter },
-    select: { id: true },
+  const existing = await prisma.payment.findFirst({
+    where: { status: { in: [...BLOCKING] }, ...ticket.ticketFilter },
+    select: { id: true, status: true },
   });
 
-  if (alreadyPaid) {
+  if (existing?.status === PAYMENT_STATUS.PENDING) {
+    // Named separately from "already paid" because the fix is different: the barber
+    // cancels the card checkout, and only then can they take the money another way.
+    throw new ConflictError('A card payment is already waiting for this cut. Cancel it first.');
+  }
+
+  if (existing) {
     throw new ConflictError('This cut has already been paid for.');
   }
+
+  return ticket;
+}
+
+export async function recordCashPayment(input: RecordCashPaymentInput): Promise<PaymentModel> {
+  const ticket = await guardTicket(input);
 
   const now = new Date();
 
@@ -186,6 +226,244 @@ export async function recordCashPayment(input: RecordCashPaymentInput): Promise<
   });
 }
 
+// --- Card ---------------------------------------------------------------------------
+
+export interface StartedCheckout {
+  paymentId: string;
+  /** Plaintext, returned exactly once. Only its hash is stored. */
+  checkoutToken: string;
+  amountCents: number;
+}
+
+/**
+ * Opens a card checkout for a finished cut.
+ *
+ * No PaymentIntent yet, and no tip. The tip belongs to whoever is holding the card, so it
+ * is chosen on the customer's own phone, and the intent is created at that point with the
+ * final amount — see `createCheckoutIntent`. Creating one here instead would mean amending
+ * its amount on every tip tap, which is more calls and a real race against a customer who
+ * submits mid-update.
+ */
+export async function startCardCheckout(input: {
+  barberId: string;
+  appointmentId?: string | undefined;
+  queueEntryId?: string | undefined;
+  startedByUserId: string;
+}): Promise<StartedCheckout> {
+  const ticket = await guardTicket(input);
+
+  const barber = await prisma.barber.findUnique({
+    where: { id: input.barberId },
+    select: { stripeAccountId: true, chargesEnabled: true },
+  });
+
+  /**
+   * A chair Stripe has not cleared must not be handed a QR code.
+   *
+   * `chargesEnabled` is the mirror maintained by `account.updated`, and this is the gate
+   * it exists for. Without it the customer scans, waits, types a card number and only
+   * then discovers the account cannot take it — with the barber standing there having no
+   * idea why.
+   */
+  if (barber?.stripeAccountId == null || !barber.chargesEnabled) {
+    throw new ConflictError(
+      'This chair cannot take card payments yet. Finish payout setup, or take cash.',
+    );
+  }
+
+  const checkoutToken = generateToken();
+
+  const payment = await prisma.payment.create({
+    data: {
+      barberId: ticket.barberId,
+      clientId: ticket.clientId,
+      appointmentId: input.appointmentId ?? null,
+      queueEntryId: input.queueEntryId ?? null,
+      method: PAYMENT_METHOD.CARD_ONLINE,
+      // Pending until Stripe says otherwise. The webhook is what settles it, never the
+      // browser coming back — a customer can close the tab on a successful payment.
+      status: PAYMENT_STATUS.PENDING,
+      amountCents: ticket.amountCents,
+      tipCents: 0,
+      totalCents: ticket.amountCents,
+      stripeAccountId: barber.stripeAccountId,
+      checkoutTokenHash: hashToken(checkoutToken),
+      recordedByUserId: input.startedByUserId,
+    },
+  });
+
+  return { paymentId: payment.id, checkoutToken, amountCents: payment.amountCents };
+}
+
+export interface CheckoutView {
+  status: PaymentStatusValue;
+  barberName: string;
+  serviceNames: string[];
+  amountCents: number;
+  tipCents: number;
+  totalCents: number;
+  /** Stripe.js must be initialised against this account — the barber is the merchant. */
+  stripeAccountId: string;
+}
+
+async function findByCheckoutToken(token: string) {
+  const payment = await prisma.payment.findUnique({
+    where: { checkoutTokenHash: hashToken(token) },
+    include: {
+      barber: { select: { displayName: true, stripeAccountId: true } },
+      appointment: { select: { services: { select: { nameSnapshot: true } } } },
+      queueEntry: { select: { services: { select: { nameSnapshot: true } } } },
+    },
+  });
+
+  // The same opaque answer the cancel link gives. A wrong token reveals nothing about
+  // whether a payment exists, and a spent one has had its hash cleared.
+  if (!payment) throw new NotFoundError('That link is not valid.');
+  return payment;
+}
+
+/**
+ * What the person holding the link is shown.
+ *
+ * Carries no client name and no phone number — the same rule as
+ * `GET /appointments/token/:token`. A payment link gets forwarded, and the only things
+ * here are what the payer is being asked to pay for.
+ */
+export async function getCheckoutByToken(token: string): Promise<CheckoutView> {
+  const payment = await findByCheckoutToken(token);
+
+  if (payment.barber.stripeAccountId === null) {
+    throw new ConflictError('This chair cannot take card payments.');
+  }
+
+  return {
+    status: payment.status,
+    stripeAccountId: payment.barber.stripeAccountId,
+    barberName: payment.barber.displayName,
+    serviceNames: (payment.appointment ?? payment.queueEntry)?.services.map(
+      (service) => service.nameSnapshot,
+    ) ?? [],
+    amountCents: payment.amountCents,
+    tipCents: payment.tipCents,
+    totalCents: payment.totalCents,
+  };
+}
+
+/**
+ * Creates the PaymentIntent on the barber's own account, with the tip included.
+ *
+ * `amountCents` is re-read from the row — which came from the price snapshots — and the
+ * tip is the only figure taken from the request. A client that could name its own total
+ * could pay four dollars for a forty dollar fade.
+ *
+ * **No `application_fee_amount`.** The shop takes nothing; the barber is merchant of
+ * record and their account bears Stripe's fee. That is the whole charge model.
+ */
+export async function createCheckoutIntent(
+  token: string,
+  tipCents: number,
+): Promise<{ clientSecret: string; totalCents: number }> {
+  if (!Number.isInteger(tipCents) || tipCents < 0 || tipCents > MAX_TIP_CENTS) {
+    throw new ValidationError('That tip amount is not valid.');
+  }
+
+  const payment = await findByCheckoutToken(token);
+
+  if (payment.status !== PAYMENT_STATUS.PENDING) {
+    throw new ConflictError('This payment is no longer open.');
+  }
+
+  if (payment.stripeAccountId === null) {
+    throw new ConflictError('This chair cannot take card payments.');
+  }
+
+  const totalCents = payment.amountCents + tipCents;
+
+  /**
+   * Reuses the intent if the customer changes their mind about the tip and submits again.
+   *
+   * Keyed on the payment, so a second submit at the same total is the same intent rather
+   * than a second charge. A *different* total is a genuinely different request, hence the
+   * amount in the key.
+   */
+  const intent = await stripe().paymentIntents.create(
+    {
+      amount: totalCents,
+      currency: 'usd',
+      automatic_payment_methods: { enabled: true },
+      metadata: { paymentId: payment.id, barberId: payment.barberId },
+    },
+    {
+      stripeAccount: payment.stripeAccountId,
+      idempotencyKey: `checkout-${payment.id}-${String(totalCents)}`,
+    },
+  );
+
+  if (intent.client_secret === null) {
+    throw new InternalError('Stripe returned an intent with no client secret.');
+  }
+
+  await prisma.payment.update({
+    where: { id: payment.id },
+    data: { tipCents, totalCents, stripePaymentIntentId: intent.id },
+  });
+
+  return { clientSecret: intent.client_secret, totalCents };
+}
+
+/**
+ * Cancels a card checkout nobody completed, so the cut can be paid for another way.
+ *
+ * This is the only thing that releases a `PENDING` row — there is no expiry — which is
+ * why the barber's list keeps showing it rather than hiding it. The Stripe cancel is
+ * best-effort: an intent that already succeeded cannot be cancelled, and in that case the
+ * webhook is about to mark the row `SUCCEEDED` anyway, so refusing here is correct.
+ */
+/** Whose chair a payment belongs to, for the authorization check on routes that name one. */
+export async function getPaymentOwner(paymentId: string): Promise<string> {
+  const payment = await prisma.payment.findUnique({
+    where: { id: paymentId },
+    select: { barberId: true },
+  });
+
+  if (!payment) throw new NotFoundError('Payment not found.');
+  return payment.barberId;
+}
+
+export async function voidPayment(paymentId: string): Promise<PaymentModel> {
+  const payment = await prisma.payment.findUnique({ where: { id: paymentId } });
+  if (!payment) throw new NotFoundError('Payment not found.');
+
+  if (payment.status !== PAYMENT_STATUS.PENDING) {
+    throw new ConflictError('Only a payment still waiting on a card can be cancelled.');
+  }
+
+  if (payment.stripePaymentIntentId !== null && payment.stripeAccountId !== null) {
+    try {
+      await stripe().paymentIntents.cancel(payment.stripePaymentIntentId, undefined, {
+        stripeAccount: payment.stripeAccountId,
+      });
+    } catch (error) {
+      // Already succeeded, already cancelled, or Stripe is unreachable. Logged rather
+      // than thrown: leaving the row PENDING would block the ticket forever over a
+      // failure that the webhook or a human can still resolve.
+      logger.warn(
+        { err: error, paymentId, intent: payment.stripePaymentIntentId },
+        'Could not cancel PaymentIntent while voiding',
+      );
+    }
+  }
+
+  return prisma.payment.update({
+    where: { id: paymentId },
+    data: {
+      status: PAYMENT_STATUS.VOIDED,
+      // A dead link must stop resolving.
+      checkoutTokenHash: null,
+    },
+  });
+}
+
 /**
  * A barber's payments for one shop day.
  *
@@ -194,6 +472,7 @@ export async function recordCashPayment(input: RecordCashPaymentInput): Promise<
  * timezone — and it is not a fixed 24 hours twice a year. Naive arithmetic here puts an
  * evening cut on the wrong day's total, which is the number rent is settled against.
  */
+
 /**
  * Resolves a shop day to a UTC range.
  *
@@ -237,6 +516,13 @@ export interface PayableTicket {
   amountCents: number;
   finishedAt: Date | null;
   status: string;
+  /**
+   * Set when a card checkout is open on this cut and nobody has completed it.
+   *
+   * The row stays on the barber's list precisely so this can be shown — it is the only
+   * thing they may need to act on, by cancelling it and taking the money another way.
+   */
+  pendingPayment: { id: string; totalCents: number } | null;
 }
 
 /**
@@ -284,21 +570,36 @@ export async function listPayableTickets(
 
   // One query for both kinds rather than one per row: a busy Saturday is dozens of
   // tickets, and this screen is opened after every single cut.
-  const settled = await prisma.payment.findMany({
+  const relevant = await prisma.payment.findMany({
     where: {
-      status: { in: [...SETTLED] },
+      status: { in: [...BLOCKING] },
       OR: [
         { appointmentId: { in: appointments.map((appointment) => appointment.id) } },
         { queueEntryId: { in: entries.map((entry) => entry.id) } },
       ],
     },
-    select: { appointmentId: true, queueEntryId: true },
+    select: { id: true, status: true, totalCents: true, appointmentId: true, queueEntryId: true },
   });
 
+  /**
+   * Settled tickets leave the list; pending ones stay and get annotated.
+   *
+   * A card checkout the customer has not completed is the one thing the barber may need
+   * to act on — cancel it and take cash — so hiding it would remove the only route to
+   * fixing it. Everything else here is finished business.
+   */
   const paid = new Set<string>();
-  for (const payment of settled) {
-    if (payment.appointmentId !== null) paid.add(payment.appointmentId);
-    if (payment.queueEntryId !== null) paid.add(payment.queueEntryId);
+  const pending = new Map<string, { id: string; totalCents: number }>();
+
+  for (const payment of relevant) {
+    const ticketId = payment.appointmentId ?? payment.queueEntryId;
+    if (ticketId === null) continue;
+
+    if (payment.status === PAYMENT_STATUS.PENDING) {
+      pending.set(ticketId, { id: payment.id, totalCents: payment.totalCents });
+    } else {
+      paid.add(ticketId);
+    }
   }
 
   const tickets: PayableTicket[] = [
@@ -313,6 +614,7 @@ export async function listPayableTickets(
       // answer to "when did this finish" — and it is the one the barber will recognise.
       finishedAt: appointment.status === 'COMPLETED' ? appointment.endAt : null,
       status: appointment.status,
+      pendingPayment: pending.get(appointment.id) ?? null,
     })),
     ...entries.map((entry) => ({
       kind: TICKET_KIND.WALK_IN,
@@ -323,6 +625,7 @@ export async function listPayableTickets(
       amountCents: sumCents(entry.services.map((service) => service.priceCents)),
       finishedAt: entry.completedAt,
       status: entry.status,
+      pendingPayment: pending.get(entry.id) ?? null,
     })),
   ].filter((ticket) => !paid.has(ticket.id));
 

@@ -143,6 +143,15 @@ export const payableTicketDtoSchema = z.object({
   finishedAt: z.iso.datetime().nullable(),
   /** `COMPLETED`, or the still-in-progress status. Drives the row's chip. */
   status: z.string(),
+  /**
+   * Present when a card checkout is open on this cut.
+   *
+   * The ticket deliberately stays on the barber's list while this is set — it is the one
+   * state they may need to act on, by cancelling and taking the money another way.
+   */
+  pendingPayment: z
+    .object({ id: z.string(), totalCents: z.int().nonnegative() })
+    .nullable(),
 });
 export type PayableTicketDto = z.infer<typeof payableTicketDtoSchema>;
 
@@ -151,9 +160,68 @@ export type PayableTicketDto = z.infer<typeof payableTicketDtoSchema>;
  *
  * The realistic failure is a fat-fingered entry on a tablet — $2000 typed where $20.00
  * was meant — and a barber discovering it after the money has moved. Cash can simply be
- * re-counted; the same schema governs the card path next, where it cannot.
+ * re-counted; on a card it cannot, which is why the same ceiling governs both and why it
+ * is declared before the schemas that reference it.
  */
 export const MAX_TIP_CENTS = 50_000;
+
+// --- Card checkout -----------------------------------------------------------
+
+
+export const startCardCheckoutRequestSchema = z
+  .object({
+    barberId: z.string().min(1),
+    appointmentId: z.string().min(1).optional(),
+    queueEntryId: z.string().min(1).optional(),
+  })
+  .refine(
+    (value) => (value.appointmentId === undefined) !== (value.queueEntryId === undefined),
+    { error: 'Provide exactly one of appointmentId or queueEntryId.', path: ['appointmentId'] },
+  );
+export type StartCardCheckoutRequest = z.infer<typeof startCardCheckoutRequestSchema>;
+
+/**
+ * What the staff screen gets back — a URL to put in a QR code, and the payment id so the
+ * same screen can cancel it. The token itself is only ever inside that URL.
+ */
+export const cardCheckoutDtoSchema = z.object({
+  paymentId: z.string(),
+  checkoutUrl: z.url(),
+  amountCents: z.int().nonnegative(),
+});
+export type CardCheckoutDto = z.infer<typeof cardCheckoutDtoSchema>;
+
+/**
+ * What the customer holding the link is shown.
+ *
+ * No client name and no phone number — a payment link gets forwarded, and everything here
+ * is something the payer is being asked to pay for. `publishableKey` and `stripeAccountId`
+ * travel together because Stripe.js has to be initialised against the barber's own
+ * account: on direct charges that account, not the platform, is the merchant.
+ */
+export const checkoutViewDtoSchema = z.object({
+  status: paymentStatusSchema,
+  barberName: z.string(),
+  serviceNames: z.array(z.string()),
+  amountCents: z.int().nonnegative(),
+  tipCents: z.int().nonnegative(),
+  totalCents: z.int().nonnegative(),
+  publishableKey: z.string(),
+  stripeAccountId: z.string(),
+});
+export type CheckoutViewDto = z.infer<typeof checkoutViewDtoSchema>;
+
+export const createCheckoutIntentRequestSchema = z.object({
+  tipCents: z.int().nonnegative().max(MAX_TIP_CENTS).default(0),
+});
+export type CreateCheckoutIntentRequest = z.infer<typeof createCheckoutIntentRequestSchema>;
+
+export const checkoutIntentDtoSchema = z.object({
+  /** Scoped to one PaymentIntent. Never logged, never persisted. */
+  clientSecret: z.string(),
+  totalCents: z.int().nonnegative(),
+});
+export type CheckoutIntentDto = z.infer<typeof checkoutIntentDtoSchema>;
 
 /**
  * Recording cash.
