@@ -7,6 +7,7 @@
  * Middleware order is load-bearing:
  *   requestId -> logger        (so every log line carries the id)
  *   helmet, cors               (before anything reads a body)
+ *   stripe webhook             (RAW body — must precede the JSON parser)
  *   json body                  (before authenticate, which reads cookies not body)
  *   cookieParser, authenticate (resolve the principal)
  *   verifyCsrf                 (needs req.auth to know if it applies)
@@ -26,6 +27,11 @@ import { errorHandler, notFoundHandler } from './middleware/error-handler.js';
 import { requestId } from './middleware/request-id.js';
 import { requestLogger } from './middleware/request-logger.js';
 import { apiRouter } from './routes/index.js';
+import {
+  STRIPE_WEBHOOK_PATH,
+  stripeWebhookHandler,
+  stripeWebhookParser,
+} from './routes/stripe-webhook.js';
 
 export function createApp(): Express {
   const app = express();
@@ -50,8 +56,21 @@ export function createApp(): Express {
     }),
   );
 
-  // NOTE: the Stripe webhook route must be mounted BEFORE this with `express.raw`,
-  // because signature verification needs the unparsed body. See the payments phase.
+  /**
+   * The Stripe webhook, and its position is the whole point.
+   *
+   * BEFORE `express.json` because signature verification hashes the exact bytes Stripe
+   * sent — parse them and re-serialise and they are no longer those bytes, so every
+   * delivery fails as forged. It therefore also lands before `cookieParser`,
+   * `authenticate` and `verifyCsrf`, which is correct rather than incidental: the
+   * signature is the authentication, no principal exists behind a Stripe POST, and CSRF
+   * guards an ambient browser cookie this request does not have.
+   *
+   * Errors still reach `errorHandler` below — Express walks to the error middleware from
+   * wherever `next(err)` is called, so mounting early costs nothing there.
+   */
+  app.post(STRIPE_WEBHOOK_PATH, stripeWebhookParser, stripeWebhookHandler);
+
   app.use(express.json({ limit: JSON_BODY_LIMIT }));
 
   app.use(cookieParser());

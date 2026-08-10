@@ -4,8 +4,10 @@ import { authRouter } from './auth.js';
 import { barberRouter } from './barbers.js';
 import { bookingRouter } from './booking.js';
 import { catalogRouter } from './catalog.js';
+import { connectRouter } from './connect.js';
 import { deviceRouter } from './devices.js';
 import { healthRouter } from './health.js';
+import { paymentRouter } from './payments.js';
 import { queueRouter } from './queue.js';
 import { staffRouter } from './staff.js';
 
@@ -18,5 +20,7 @@ apiRouter.use(deviceRouter);
 apiRouter.use(staffRouter);
 apiRouter.use(catalogRouter);
 apiRouter.use(barberRouter);
+apiRouter.use(connectRouter);
+apiRouter.use(paymentRouter);
 apiRouter.use(bookingRouter);
 apiRouter.use(queueRouter);

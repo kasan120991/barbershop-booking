@@ -62,7 +62,24 @@ export type AuditAction =
    */
   | 'device.created'
   | 'device.revoked'
-  | 'device.deleted';
+  | 'device.deleted'
+  /**
+   * Stripe Connect onboarding. Not a money movement yet, but it is the act that decides
+   * *which account money will land in* — so who created a chair's connected account, and
+   * when Stripe cleared it to take payment, is exactly the trail a disputed payout needs.
+   *
+   * `connect.status_changed` is recorded only when a mirrored capability actually
+   * changed. It is re-read on every return trip from onboarding, and logging the no-ops
+   * would bury the two transitions anyone will ever look for.
+   */
+  | 'connect.account_created'
+  | 'connect.status_changed'
+  /**
+   * Money changed hands. Cash especially: a card payment leaves a second copy of the
+   * story on Stripe, and cash leaves none — this row is the only record that the drawer
+   * and the day's total should agree, and who says so.
+   */
+  | 'payment.recorded';
 
 export interface AuditInput {
   action: AuditAction;

@@ -9,6 +9,16 @@ export const API_PREFIX = '/api';
 /** Request bodies are small (a booking, a payment). A low cap is a cheap DoS guard. */
 export const JSON_BODY_LIMIT = '100kb';
 
+/**
+ * The webhook body gets its own, larger cap.
+ *
+ * A connected-account event embeds the whole `Account` object — capabilities,
+ * requirements, external accounts — and clears 100kb without being unusual. A body the
+ * parser truncates fails signature verification, which reads as an attack rather than as
+ * a limit set too low.
+ */
+export const WEBHOOK_BODY_LIMIT = '1mb';
+
 /** httpOnly — JavaScript must never be able to read the session token. */
 export const SESSION_COOKIE = 'fc_session';
 

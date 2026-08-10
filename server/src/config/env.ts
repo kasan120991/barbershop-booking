@@ -46,7 +46,46 @@ const envSchema = z.object({
   /** Login attempts allowed per IP within the window, before the account lockout can even be reached. */
   LOGIN_RATE_LIMIT_MAX: z.coerce.number().int().positive().default(20),
   LOGIN_RATE_LIMIT_WINDOW_MINUTES: z.coerce.number().int().positive().default(15),
-});
+
+  /**
+   * Stripe platform secret key.
+   *
+   * Optional on purpose. Every phase before this one boots and its whole test suite
+   * runs without a Stripe account, and a required key here would mean nobody can work
+   * on the queue or the calendar without provisioning one. `lib/stripe.ts` throws a
+   * named error the first time a payment path is actually reached instead, so the
+   * failure names the missing key rather than surfacing as `undefined` inside the SDK.
+   *
+   * Must be a test key (`sk_test_`/`rk_test_`) unless NODE_ENV is production — see
+   * the refinement below.
+   */
+  STRIPE_SECRET_KEY: z.string().min(1).optional(),
+
+  /**
+   * Signing secret for the Stripe webhook endpoint.
+   *
+   * Optional for the same reason as the key above — but note the consequence is
+   * different. Without it the endpoint does not fall back to trusting the body; it
+   * refuses every delivery. An unverified webhook is an unauthenticated POST that moves
+   * money, so "not configured" has to mean closed, never open.
+   *
+   * Local value comes from `stripe listen`, which prints a `whsec_…` per session. The
+   * deployed endpoint has its own, from the Dashboard.
+   */
+  STRIPE_WEBHOOK_SECRET: z.string().min(1).optional(),
+})
+  /**
+   * A live key in a dev shell would take real money on a real barber's account from a
+   * laptop pointed at a seeded database. Cheap to check once at boot; impossible to
+   * notice otherwise until it has happened.
+   */
+  .refine(
+    (value) =>
+      value.NODE_ENV === 'production' ||
+      value.STRIPE_SECRET_KEY === undefined ||
+      !value.STRIPE_SECRET_KEY.startsWith('sk_live_'),
+    { error: 'STRIPE_SECRET_KEY is a LIVE key but NODE_ENV is not production.', path: ['STRIPE_SECRET_KEY'] },
+  );
 
 export type Env = z.infer<typeof envSchema>;
 

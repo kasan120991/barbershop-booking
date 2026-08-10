@@ -13,6 +13,19 @@ export default defineConfig({
       LOG_LEVEL: 'silent',
       TZ: 'UTC',
       DATABASE_URL: 'mysql://root:root@127.0.0.1:8889/francis_cutz_test',
+
+      /**
+       * Fake, and never used against the network.
+       *
+       * `constructEvent` is local HMAC — it needs a client instance and a signing secret,
+       * neither of which it sends anywhere. That lets the webhook tests sign their own
+       * fixtures and assert the real verification path rather than stubbing past it.
+       *
+       * Any test that would make an actual Stripe call is the one thing these must not
+       * enable, which is why nothing in the suite exercises a network-bound Stripe path.
+       */
+      STRIPE_SECRET_KEY: 'sk_test_fixture_key_not_a_real_account',
+      STRIPE_WEBHOOK_SECRET: 'whsec_fixture_secret_for_signing_tests',
     },
     // The Prisma client is heavy to import; give DB suites room on a cold start.
     testTimeout: 20_000,
