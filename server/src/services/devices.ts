@@ -46,6 +46,42 @@ export interface ResolvedDevice {
   type: DeviceType;
 }
 
+/**
+ * What a device looks like in the audit trail.
+ *
+ * Built by picking fields rather than by spreading the row and deleting the secrets,
+ * for the same reason the DTO mappers do: a column added to `Device` later would
+ * otherwise appear in the log by default, and the two columns that must never appear
+ * are exactly the two a future change is most likely to add beside.
+ *
+ * `pairingCodeHash` in particular is a *live* credential's hash while a screen is
+ * pending — copying it into a second table with different retention is strictly worse
+ * than leaving it in one place.
+ */
+export interface AuditableDevice {
+  label: string;
+  type: DeviceType;
+  pairedAt: Date | null;
+  lastSeenAt: Date | null;
+  revokedAt: Date | null;
+}
+
+function auditable(device: {
+  label: string;
+  type: DeviceType;
+  pairedAt: Date | null;
+  lastSeenAt: Date | null;
+  revokedAt: Date | null;
+}): AuditableDevice {
+  return {
+    label: device.label,
+    type: device.type,
+    pairedAt: device.pairedAt,
+    lastSeenAt: device.lastSeenAt,
+    revokedAt: device.revokedAt,
+  };
+}
+
 export async function createPairingCode(input: {
   label: string;
   type: DeviceType;
@@ -146,12 +182,20 @@ export function touchDevice(deviceId: string): void {
     .catch(() => undefined);
 }
 
-/** Revoking clears the token outright, so a stolen tablet cannot be re-enabled. */
-export async function revokeDevice(deviceId: string): Promise<void> {
+/**
+ * Revoking clears the token outright, so a stolen tablet cannot be re-enabled.
+ *
+ * Returns what it was and what it became, for the audit trail. Neither snapshot may
+ * carry `tokenHash` or `pairingCodeHash` — see `auditable`.
+ */
+export async function revokeDevice(deviceId: string): Promise<{
+  before: AuditableDevice;
+  after: AuditableDevice;
+}> {
   const device = await prisma.device.findUnique({ where: { id: deviceId } });
   if (!device) throw new NotFoundError('Device not found.');
 
-  await prisma.device.update({
+  const updated = await prisma.device.update({
     where: { id: deviceId },
     data: {
       revokedAt: new Date(),
@@ -160,6 +204,8 @@ export async function revokeDevice(deviceId: string): Promise<void> {
       pairingCodeExpiresAt: null,
     },
   });
+
+  return { before: auditable(device), after: auditable(updated) };
 }
 
 /**
@@ -176,7 +222,7 @@ export async function revokeDevice(deviceId: string): Promise<void> {
  * kiosk ever made points at an id that this delete is about to make unresolvable. The
  * label is then the only thing left that can say which screen by the door that was.
  */
-export async function deleteRevokedDevice(deviceId: string) {
+export async function deleteRevokedDevice(deviceId: string): Promise<AuditableDevice> {
   const device = await prisma.device.findUnique({ where: { id: deviceId } });
   if (!device) throw new NotFoundError('Device not found.');
 
@@ -185,7 +231,7 @@ export async function deleteRevokedDevice(deviceId: string) {
   }
 
   await prisma.device.delete({ where: { id: deviceId } });
-  return device;
+  return auditable(device);
 }
 
 export async function listDevices() {

@@ -254,10 +254,15 @@ Settled while building it:
   take payment. Device requests are CSRF-exempt: a header credential cannot be forged cross-site.
 - **Removing a screen is two steps: revoke, then delete.** `DELETE /devices/:id` refuses anything
   not already revoked, because one click on a list row must not be able to unpair a tablet that is
-  working in the shop — revoking is the deliberate step that stops it, and it warns. The delete is
-  audited with the device's *label* in `before`, and it is the only device action that is:
-  `AuditLog.actorDeviceId` is a bare string with no foreign key, so every queue join that kiosk
-  ever made would otherwise point at an id nothing can resolve.
+  working in the shop — revoking is the deliberate step that stops it, and it warns.
+- **The whole device lifecycle is audited** — `device.created`, `device.revoked`, `device.deleted`.
+  A screen acts with nobody behind it, so the admin who issued it is the only accountability that
+  exists; and `AuditLog.actorDeviceId` is a bare string with no foreign key, so the label captured
+  on delete is the only thing that can still say what an older queue join's device id referred to.
+  **Snapshots go through `auditable()` in `services/devices.ts`, which picks fields** — never spread
+  the Prisma row and never log `createPairingCode`'s return value. Both carry credential material
+  (`pairingCodeHash` is a *live* credential while a screen is pending), and `after: created` is one
+  careless keystroke away. `devices.test.ts` asserts the code and both hash fields stay out.
 - **`KIOSK` and `DISPLAY` are a permission, not a label.** Only a kiosk may `POST /queue`; the wall
   display is read-only and is refused. Both read the same redacted board.
 - **The pairing response is the only time a screen is told its own type**, so the client stores it

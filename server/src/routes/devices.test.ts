@@ -80,10 +80,12 @@ async function createDevice(label = 'DEVTEST Front counter', type = 'KIOSK') {
 afterAll(async () => {
   if (reachable) {
     await prisma.device.deleteMany({ where: { label: { startsWith: 'DEVTEST ' } } });
-    // The delete tests leave audit rows whose device is, by design, gone — so they
-    // cannot be scoped by joining back to a fixture. Nothing else in the suite writes
-    // this action, which is what keeps the filter this file's own.
-    await prisma.auditLog.deleteMany({ where: { action: 'device.deleted' } });
+    // Scoped by action rather than by fixture: the delete tests leave rows whose device
+    // is, by design, gone, so there is nothing left to join back to. Nothing else in
+    // the suite writes a `device.*` action, which is what keeps this file's own.
+    await prisma.auditLog.deleteMany({
+      where: { action: { in: ['device.created', 'device.revoked', 'device.deleted'] } },
+    });
     await prisma.user.deleteMany({ where: { email: ADMIN_EMAIL } });
     await prisma.$disconnect();
   }
@@ -267,6 +269,59 @@ describe.skipIf(!reachable)('removing a screen', () => {
       .set('Cookie', admin.cookies)
       .set(CSRF_HEADER, admin.csrfToken)
       .expect(404);
+  });
+});
+
+/**
+ * A screen acts with nobody behind it, so the only accountability for one existing is
+ * the record of the admin who issued it. These assert both that the record is written
+ * and that it does not become somewhere a credential lives.
+ */
+describe.skipIf(!reachable)('the device audit trail', () => {
+  beforeEach(reseed);
+
+  it('records who issued a screen, and never the code itself', async () => {
+    const { deviceId, pairingCode } = await createDevice('DEVTEST Issued counter');
+
+    const logged = await prisma.auditLog.findFirst({
+      where: { action: 'device.created', entityId: deviceId },
+    });
+
+    expect(logged?.after).toMatchObject({ label: 'DEVTEST Issued counter', type: 'KIOSK' });
+    expect(logged?.actorUserId).not.toBeNull();
+
+    // The point of the test. `createPairingCode` returns the plaintext code, and it is
+    // the natural thing to hand straight to `after:` — which would leave a live
+    // credential sitting in a second table with different retention.
+    expect(JSON.stringify(logged)).not.toContain(pairingCode);
+    expect(JSON.stringify(logged)).not.toContain(hashToken(pairingCode));
+  });
+
+  it('records a revocation with the state on both sides', async () => {
+    const { pairingCode, deviceId, admin } = await createDevice('DEVTEST Retired counter');
+    await request(server).post('/api/devices/pair').send({ pairingCode }).expect(200);
+
+    await request(server)
+      .post(`/api/devices/${deviceId}/revoke`)
+      .set('Cookie', admin.cookies)
+      .set(CSRF_HEADER, admin.csrfToken)
+      .expect(204);
+
+    const logged = await prisma.auditLog.findFirst({
+      where: { action: 'device.revoked', entityId: deviceId },
+    });
+
+    // Was working, now is not. The pair is what makes the entry readable on its own,
+    // instead of having to reconstruct the row's history from the entries around it.
+    expect((logged?.before as { revokedAt: string | null }).revokedAt).toBeNull();
+    expect((logged?.after as { revokedAt: string | null }).revokedAt).not.toBeNull();
+    expect(logged?.before).toMatchObject({ label: 'DEVTEST Retired counter' });
+
+    // No credential material on either side, live or cleared. A `before: device` that
+    // spread the whole Prisma row would put a paired token's hash in here.
+    const text = JSON.stringify(logged);
+    expect(text).not.toContain('tokenHash');
+    expect(text).not.toContain('pairingCodeHash');
   });
 });
 

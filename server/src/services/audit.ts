@@ -52,11 +52,16 @@ export type AuditAction =
   | 'queue.priority_changed'
   | 'queue.barber_changed'
   /**
-   * Deleting a screen is recorded where creating and revoking one are not, and the
-   * asymmetry is the point: those two leave the row behind to be read later, this one
-   * destroys it. `actorDeviceId` on every queue join a kiosk made is a bare id with no
-   * foreign key, so without the label captured here those rows become unattributable.
+   * The credential lifecycle of a screen. Issuing one hands out queue access to a
+   * tablet nobody signs into, so who did it and when is the only accountability there
+   * is — the device itself can never be asked.
+   *
+   * `device.deleted` additionally carries the label, because it destroys the row:
+   * `actorDeviceId` on every queue join a kiosk made is a bare id with no foreign key,
+   * so without that snapshot those rows become unattributable.
    */
+  | 'device.created'
+  | 'device.revoked'
   | 'device.deleted';
 
 export interface AuditInput {

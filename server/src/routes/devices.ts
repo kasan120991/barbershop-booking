@@ -52,6 +52,15 @@ deviceRouter.post('/devices', requireRole(ROLE.ADMIN as Role), async (req, res) 
     createdByUserId: req.auth.userId,
   });
 
+  // Deliberately not `after: created` — that object carries the plaintext pairing code,
+  // and the audit trail is not a place to keep a live credential.
+  await recordAudit(auditContext(req), {
+    action: 'device.created',
+    entityType: 'Device',
+    entityId: created.deviceId,
+    after: { label: created.label, type: created.type },
+  });
+
   const body: PairingCodeDto = {
     deviceId: created.deviceId,
     label: created.label,
@@ -85,7 +94,18 @@ deviceRouter.get('/devices', requireRole(ROLE.ADMIN as Role), async (_req, res) 
 });
 
 deviceRouter.post('/devices/:deviceId/revoke', requireRole(ROLE.ADMIN as Role), async (req, res) => {
-  await revokeDevice(pathParam(req, 'deviceId'));
+  const deviceId = pathParam(req, 'deviceId');
+
+  const { before, after } = await revokeDevice(deviceId);
+
+  await recordAudit(auditContext(req), {
+    action: 'device.revoked',
+    entityType: 'Device',
+    entityId: deviceId,
+    before,
+    after,
+  });
+
   res.status(204).send();
 });
 
@@ -102,9 +122,8 @@ deviceRouter.delete('/devices/:deviceId', requireRole(ROLE.ADMIN as Role), async
     action: 'device.deleted',
     entityType: 'Device',
     entityId: deviceId,
-    // The label and type specifically: this is the last chance to record what an
-    // `actorDeviceId` in an older row referred to.
-    before: { label: deleted.label, type: deleted.type, pairedAt: deleted.pairedAt },
+    // The last chance to record what an `actorDeviceId` in an older row referred to.
+    before: deleted,
   });
 
   res.status(204).send();
