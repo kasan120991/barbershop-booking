@@ -80,6 +80,10 @@ async function createDevice(label = 'DEVTEST Front counter', type = 'KIOSK') {
 afterAll(async () => {
   if (reachable) {
     await prisma.device.deleteMany({ where: { label: { startsWith: 'DEVTEST ' } } });
+    // The delete tests leave audit rows whose device is, by design, gone — so they
+    // cannot be scoped by joining back to a fixture. Nothing else in the suite writes
+    // this action, which is what keeps the filter this file's own.
+    await prisma.auditLog.deleteMany({ where: { action: 'device.deleted' } });
     await prisma.user.deleteMany({ where: { email: ADMIN_EMAIL } });
     await prisma.$disconnect();
   }
@@ -176,6 +180,93 @@ describe.skipIf(!reachable)('device pairing', () => {
 
   it('requires admin to create a device', async () => {
     await request(server).post('/api/devices').send({ label: 'DEVTEST x', type: 'KIOSK' }).expect(401);
+  });
+});
+
+describe.skipIf(!reachable)('removing a screen', () => {
+  beforeEach(reseed);
+
+  it('deletes a revoked device and records what it was', async () => {
+    const { deviceId, admin } = await createDevice('DEVTEST Old counter');
+
+    await request(server)
+      .post(`/api/devices/${deviceId}/revoke`)
+      .set('Cookie', admin.cookies)
+      .set(CSRF_HEADER, admin.csrfToken)
+      .expect(204);
+
+    await request(server)
+      .delete(`/api/devices/${deviceId}`)
+      .set('Cookie', admin.cookies)
+      .set(CSRF_HEADER, admin.csrfToken)
+      .expect(204);
+
+    expect(await prisma.device.findUnique({ where: { id: deviceId } })).toBeNull();
+
+    // The label has to outlive the row. `AuditLog.actorDeviceId` has no foreign key, so
+    // this entry is the only thing that can ever say which screen an older queue join
+    // came from once the device itself is gone.
+    const logged = await prisma.auditLog.findFirst({
+      where: { action: 'device.deleted', entityId: deviceId },
+    });
+    expect(logged).not.toBeNull();
+    expect(logged?.before).toMatchObject({ label: 'DEVTEST Old counter', type: 'KIOSK' });
+  });
+
+  it('refuses to delete a screen that has not been revoked', async () => {
+    // The two-step is the safety property: one click on a list row must not be able to
+    // unpair a tablet that is sitting in the shop working.
+    const { deviceId, admin } = await createDevice('DEVTEST Live counter');
+
+    const response = await request(server)
+      .delete(`/api/devices/${deviceId}`)
+      .set('Cookie', admin.cookies)
+      .set(CSRF_HEADER, admin.csrfToken)
+      .expect(409);
+
+    expect(response.body.error.message).toMatch(/revoke/i);
+    expect(await prisma.device.findUnique({ where: { id: deviceId } })).not.toBeNull();
+  });
+
+  it('refuses to delete a paired screen that is still working', async () => {
+    const { pairingCode, deviceId, admin } = await createDevice('DEVTEST Paired counter');
+    const paired = await request(server).post('/api/devices/pair').send({ pairingCode }).expect(200);
+
+    await request(server)
+      .delete(`/api/devices/${deviceId}`)
+      .set('Cookie', admin.cookies)
+      .set(CSRF_HEADER, admin.csrfToken)
+      .expect(409);
+
+    // Still authenticated: the refusal left the credential alone rather than half-doing
+    // the job, which is what an unpaired-but-still-listed screen would be.
+    await request(server)
+      .get('/api/queue/board')
+      .set(DEVICE_TOKEN_HEADER, paired.body.deviceToken)
+      .expect(200);
+  });
+
+  it('requires admin to delete a device', async () => {
+    const { deviceId, admin } = await createDevice('DEVTEST Someone elses');
+
+    await request(server)
+      .post(`/api/devices/${deviceId}/revoke`)
+      .set('Cookie', admin.cookies)
+      .set(CSRF_HEADER, admin.csrfToken)
+      .expect(204);
+
+    await request(server).delete(`/api/devices/${deviceId}`).expect(401);
+    expect(await prisma.device.findUnique({ where: { id: deviceId } })).not.toBeNull();
+  });
+
+  it('404s on a device that is already gone', async () => {
+    const { admin } = await createDevice('DEVTEST Ghost');
+
+    await request(server)
+      .delete('/api/devices/does-not-exist')
+      .set('Cookie', admin.cookies)
+      .set(CSRF_HEADER, admin.csrfToken)
+      .expect(404);
   });
 });
 

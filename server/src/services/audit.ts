@@ -50,7 +50,14 @@ export type AuditAction =
   // The two reorders. Any staff member may make them, so the record of who did it
   // and what it was before is what keeps that accountable.
   | 'queue.priority_changed'
-  | 'queue.barber_changed';
+  | 'queue.barber_changed'
+  /**
+   * Deleting a screen is recorded where creating and revoking one are not, and the
+   * asymmetry is the point: those two leave the row behind to be read later, this one
+   * destroys it. `actorDeviceId` on every queue join a kiosk made is a bare id with no
+   * foreign key, so without the label captured here those rows become unattributable.
+   */
+  | 'device.deleted';
 
 export interface AuditInput {
   action: AuditAction;

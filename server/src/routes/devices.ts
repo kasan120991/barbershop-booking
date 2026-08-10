@@ -23,8 +23,10 @@ import { pathParam } from '../lib/http.js';
 import { limiter } from '../lib/rate-limit.js';
 import { toDeviceDto } from '../mappers/auth.js';
 import { requireRole } from '../middleware/require-auth.js';
+import { auditContext, recordAudit } from '../services/audit.js';
 import {
   createPairingCode,
+  deleteRevokedDevice,
   listDevices,
   redeemPairingCode,
   revokeDevice,
@@ -84,5 +86,26 @@ deviceRouter.get('/devices', requireRole(ROLE.ADMIN as Role), async (_req, res) 
 
 deviceRouter.post('/devices/:deviceId/revoke', requireRole(ROLE.ADMIN as Role), async (req, res) => {
   await revokeDevice(pathParam(req, 'deviceId'));
+  res.status(204).send();
+});
+
+/**
+ * Tidying up. Refuses anything not already revoked — see `deleteRevokedDevice` — so a
+ * working screen cannot be unpaired by a stray click on a list row.
+ */
+deviceRouter.delete('/devices/:deviceId', requireRole(ROLE.ADMIN as Role), async (req, res) => {
+  const deviceId = pathParam(req, 'deviceId');
+
+  const deleted = await deleteRevokedDevice(deviceId);
+
+  await recordAudit(auditContext(req), {
+    action: 'device.deleted',
+    entityType: 'Device',
+    entityId: deviceId,
+    // The label and type specifically: this is the last chance to record what an
+    // `actorDeviceId` in an older row referred to.
+    before: { label: deleted.label, type: deleted.type, pairedAt: deleted.pairedAt },
+  });
+
   res.status(204).send();
 });

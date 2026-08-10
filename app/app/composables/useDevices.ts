@@ -46,5 +46,15 @@ export function useDevices() {
     await refresh();
   }
 
-  return { devices, loading, refresh, createDevice, revokeDevice };
+  /**
+   * Only ever offered on a revoked row, and the server refuses anything else — a screen
+   * has to be stopped before it can be tidied away, so that one click cannot unpair a
+   * tablet that is working in the shop.
+   */
+  async function deleteDevice(deviceId: string): Promise<void> {
+    await api(`/devices/${deviceId}`, { method: 'DELETE' });
+    await refresh();
+  }
+
+  return { devices, loading, refresh, createDevice, revokeDevice, deleteDevice };
 }

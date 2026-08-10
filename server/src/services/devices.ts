@@ -162,6 +162,32 @@ export async function revokeDevice(deviceId: string): Promise<void> {
   });
 }
 
+/**
+ * Removes a revoked screen from the list for good.
+ *
+ * **Revoked first, always.** Deleting a live device would silently unpair a tablet
+ * sitting in the shop, and the person clicking has no way to see that happen. Revoking
+ * is the deliberate step that stops it working and already says so; this only tidies up
+ * afterwards. Two steps rather than one is the whole safety property, so the check is
+ * here in the service and not in the confirm dialog.
+ *
+ * Returns the deleted row so the caller can put its label in the audit trail —
+ * `AuditLog.actorDeviceId` is a bare string with no foreign key, so every queue join a
+ * kiosk ever made points at an id that this delete is about to make unresolvable. The
+ * label is then the only thing left that can say which screen by the door that was.
+ */
+export async function deleteRevokedDevice(deviceId: string) {
+  const device = await prisma.device.findUnique({ where: { id: deviceId } });
+  if (!device) throw new NotFoundError('Device not found.');
+
+  if (device.revokedAt === null) {
+    throw new ConflictError('Revoke this screen before removing it.');
+  }
+
+  await prisma.device.delete({ where: { id: deviceId } });
+  return device;
+}
+
 export async function listDevices() {
   return prisma.device.findMany({ orderBy: [{ revokedAt: 'asc' }, { createdAt: 'desc' }] });
 }

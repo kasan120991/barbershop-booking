@@ -252,6 +252,12 @@ Settled while building it:
   `x-device-token`. The token never expires — an admin revokes it, which clears the token outright.
   Narrow scope — join queue, read the board. It cannot read client history, list phone numbers, or
   take payment. Device requests are CSRF-exempt: a header credential cannot be forged cross-site.
+- **Removing a screen is two steps: revoke, then delete.** `DELETE /devices/:id` refuses anything
+  not already revoked, because one click on a list row must not be able to unpair a tablet that is
+  working in the shop — revoking is the deliberate step that stops it, and it warns. The delete is
+  audited with the device's *label* in `before`, and it is the only device action that is:
+  `AuditLog.actorDeviceId` is a bare string with no foreign key, so every queue join that kiosk
+  ever made would otherwise point at an id nothing can resolve.
 - **`KIOSK` and `DISPLAY` are a permission, not a label.** Only a kiosk may `POST /queue`; the wall
   display is read-only and is refused. Both read the same redacted board.
 - **The pairing response is the only time a screen is told its own type**, so the client stores it

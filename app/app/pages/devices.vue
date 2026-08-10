@@ -104,6 +104,31 @@ function onRevoke(device: { id: string; label: string }) {
   });
 }
 
+function onDelete(device: { id: string; label: string }) {
+  confirm.require({
+    header: 'Remove this screen',
+    // No warning about it stopping working: it already has. This is only about the list.
+    message: `${device.label} will be removed from this list. It was revoked, so nothing changes on the screen itself.`,
+    acceptLabel: 'Remove',
+    rejectLabel: 'Keep It',
+    acceptProps: { severity: 'danger' },
+    rejectProps: { severity: 'secondary', variant: 'text' },
+    accept: () => {
+      void (async () => {
+        busyId.value = device.id;
+        try {
+          await devices.deleteDevice(device.id);
+          notifySuccess(`${device.label} removed`);
+        } catch (error) {
+          notifyApiFailure(error);
+        } finally {
+          busyId.value = null;
+        }
+      })();
+    },
+  });
+}
+
 function statusLabel(status: string): string {
   if (status === 'PAIRED') return 'Paired';
   if (status === 'PENDING') return 'Waiting to pair';
@@ -154,6 +179,9 @@ function when(value: string | null): string {
           <span class="meta">{{ when(device.lastSeenAt) }}</span>
         </span>
 
+        <!-- One action per row, and which one depends on the state: a live screen can
+             only be revoked, a revoked one can only be removed. Showing both would put
+             the destructive pair side by side on the row that is still working. -->
         <span class="actions">
           <Button
             v-if="device.status !== 'REVOKED'"
@@ -163,6 +191,15 @@ function when(value: string | null): string {
             severity="danger"
             :loading="busyId === device.id"
             @click="onRevoke(device)"
+          />
+          <Button
+            v-else
+            label="Remove"
+            size="small"
+            variant="text"
+            severity="secondary"
+            :loading="busyId === device.id"
+            @click="onDelete(device)"
           />
         </span>
       </article>
