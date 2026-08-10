@@ -20,12 +20,15 @@
 import {
   PAYMENT_METHOD,
   PAYMENT_STATUS,
+  TICKET_KIND,
   sumCents,
   type PaymentStatus as PaymentStatusValue,
+  type TicketKind,
 } from '@francis/shared';
 
 import { DateTime } from 'luxon';
 
+import type { AppointmentStatus, QueueStatus } from '../generated/prisma/enums.js';
 import type { PaymentModel } from '../generated/prisma/models.js';
 import { ConflictError, NotFoundError, ValidationError } from '../lib/errors.js';
 import { prisma } from '../lib/prisma.js';
@@ -59,8 +62,8 @@ const SETTLED: readonly PaymentStatusValue[] = [
  * teach everyone to mark cuts finished early — which quietly corrupts the queue
  * estimator, since a completed entry stops occupying the chair.
  */
-const PAYABLE_APPOINTMENT_STATUSES = ['IN_PROGRESS', 'COMPLETED'];
-const PAYABLE_QUEUE_STATUSES = ['IN_CHAIR', 'COMPLETED'];
+const PAYABLE_APPOINTMENT_STATUSES: AppointmentStatus[] = ['IN_PROGRESS', 'COMPLETED'];
+const PAYABLE_QUEUE_STATUSES: QueueStatus[] = ['IN_CHAIR', 'COMPLETED'];
 
 export interface RecordCashPaymentInput {
   barberId: string;
@@ -191,20 +194,146 @@ export async function recordCashPayment(input: RecordCashPaymentInput): Promise<
  * timezone — and it is not a fixed 24 hours twice a year. Naive arithmetic here puts an
  * evening cut on the wrong day's total, which is the number rent is settled against.
  */
-export async function listPaymentsForShopDay(
-  barberId: string,
-  localDate: string,
-): Promise<PaymentModel[]> {
+/**
+ * Resolves a shop day to a UTC range.
+ *
+ * `localDate` is optional and omitting it means **today in the shop's timezone** — which
+ * is the only sensible default and, more to the point, one the client must not compute.
+ * A browser sends whatever its own machine thinks the date is; at 00:20 on a tablet left
+ * on UTC that is already tomorrow, and the barber's takings vanish from a screen that
+ * looks like it is working.
+ */
+async function shopDayRange(localDate?: string): Promise<{ from: Date; to: Date }> {
   const { timezone } = await getShopSettings();
 
-  const dayStart = DateTime.fromISO(localDate, { zone: timezone }).startOf('day');
+  const dayStart =
+    localDate === undefined
+      ? DateTime.now().setZone(timezone).startOf('day')
+      : DateTime.fromISO(localDate, { zone: timezone }).startOf('day');
+
   if (!dayStart.isValid) throw new ValidationError('Enter a valid date.');
 
+  return { from: dayStart.toJSDate(), to: dayStart.plus({ days: 1 }).toJSDate() };
+}
+
+export async function listPaymentsForShopDay(
+  barberId: string,
+  localDate?: string,
+): Promise<PaymentModel[]> {
+  const { from, to } = await shopDayRange(localDate);
+
   return prisma.payment.findMany({
-    where: {
-      barberId,
-      paidAt: { gte: dayStart.toJSDate(), lt: dayStart.plus({ days: 1 }).toJSDate() },
-    },
+    where: { barberId, paidAt: { gte: from, lt: to } },
     orderBy: { paidAt: 'desc' },
+  });
+}
+
+export interface PayableTicket {
+  kind: TicketKind;
+  id: string;
+  clientFirstName: string;
+  clientLastName: string | null;
+  serviceNames: string[];
+  amountCents: number;
+  finishedAt: Date | null;
+  status: string;
+}
+
+/**
+ * Finished cuts on this chair today that nobody has been paid for.
+ *
+ * The subtraction is the entire point. A list of everything finished today would leave
+ * the barber comparing it against their own memory of what has been settled — which is
+ * the job the screen exists to do, handed back to them. So anything already carrying a
+ * settled payment is gone from the list, and a row disappearing is the confirmation that
+ * the payment landed.
+ *
+ * Both halves of the day are here because the shop runs both: a booked appointment and a
+ * walk-in are the same transaction to the person holding the notes.
+ */
+export async function listPayableTickets(
+  barberId: string,
+  localDate?: string,
+): Promise<PayableTicket[]> {
+  const { from, to } = await shopDayRange(localDate);
+
+  const [appointments, entries] = await Promise.all([
+    prisma.appointment.findMany({
+      where: {
+        barberId,
+        status: { in: PAYABLE_APPOINTMENT_STATUSES },
+        startAt: { gte: from, lt: to },
+      },
+      include: {
+        client: { select: { firstName: true, lastName: true } },
+        services: { select: { priceCents: true, nameSnapshot: true } },
+      },
+    }),
+    prisma.queueEntry.findMany({
+      where: {
+        barberId,
+        status: { in: PAYABLE_QUEUE_STATUSES },
+        joinedAt: { gte: from, lt: to },
+      },
+      include: {
+        client: { select: { firstName: true, lastName: true } },
+        services: { select: { priceCents: true, nameSnapshot: true } },
+      },
+    }),
+  ]);
+
+  // One query for both kinds rather than one per row: a busy Saturday is dozens of
+  // tickets, and this screen is opened after every single cut.
+  const settled = await prisma.payment.findMany({
+    where: {
+      status: { in: [...SETTLED] },
+      OR: [
+        { appointmentId: { in: appointments.map((appointment) => appointment.id) } },
+        { queueEntryId: { in: entries.map((entry) => entry.id) } },
+      ],
+    },
+    select: { appointmentId: true, queueEntryId: true },
+  });
+
+  const paid = new Set<string>();
+  for (const payment of settled) {
+    if (payment.appointmentId !== null) paid.add(payment.appointmentId);
+    if (payment.queueEntryId !== null) paid.add(payment.queueEntryId);
+  }
+
+  const tickets: PayableTicket[] = [
+    ...appointments.map((appointment) => ({
+      kind: TICKET_KIND.APPOINTMENT,
+      id: appointment.id,
+      clientFirstName: appointment.client.firstName,
+      clientLastName: appointment.client.lastName,
+      serviceNames: appointment.services.map((service) => service.nameSnapshot),
+      amountCents: sumCents(appointment.services.map((service) => service.priceCents)),
+      // `Appointment` has no completedAt column, so the booked end is the best available
+      // answer to "when did this finish" — and it is the one the barber will recognise.
+      finishedAt: appointment.status === 'COMPLETED' ? appointment.endAt : null,
+      status: appointment.status,
+    })),
+    ...entries.map((entry) => ({
+      kind: TICKET_KIND.WALK_IN,
+      id: entry.id,
+      clientFirstName: entry.client.firstName,
+      clientLastName: entry.client.lastName,
+      serviceNames: entry.services.map((service) => service.nameSnapshot),
+      amountCents: sumCents(entry.services.map((service) => service.priceCents)),
+      finishedAt: entry.completedAt,
+      status: entry.status,
+    })),
+  ].filter((ticket) => !paid.has(ticket.id));
+
+  /**
+   * Most recently finished first, and anyone still in the chair at the very top — that
+   * is the cut the barber is about to be handed money for.
+   */
+  return tickets.sort((a, b) => {
+    if (a.finishedAt === null && b.finishedAt === null) return 0;
+    if (a.finishedAt === null) return -1;
+    if (b.finishedAt === null) return 1;
+    return b.finishedAt.getTime() - a.finishedAt.getTime();
   });
 }

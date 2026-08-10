@@ -8,11 +8,12 @@
  */
 
 import { PAYMENT_STATUS } from '@francis/shared';
+import { DateTime } from 'luxon';
 import { afterAll, beforeEach, describe, expect, it } from 'vitest';
 
 import { prisma } from '../lib/prisma.js';
 import { hashPassword } from './passwords.js';
-import { recordCashPayment } from './payments.js';
+import { listPayableTickets, recordCashPayment } from './payments.js';
 
 const DOMAIN = '@payments.test';
 const PHONE = '+15555550701';
@@ -87,12 +88,15 @@ async function seed() {
 }
 
 /** A walk-in already in the chair — the normal moment cash is handed over. */
-async function seatedWalkIn(overrides: { barberId?: string; status?: string } = {}) {
+async function seatedWalkIn(
+  overrides: { barberId?: string; status?: string; completedAt?: Date } = {},
+) {
   return prisma.queueEntry.create({
     data: {
       clientId,
       barberId: overrides.barberId ?? barberId,
       status: (overrides.status ?? 'IN_CHAIR') as 'IN_CHAIR',
+      ...(overrides.completedAt === undefined ? {} : { completedAt: overrides.completedAt }),
       durationMinutes: 40,
       priceCentsTotal: LIVE_PRICE,
       services: {
@@ -221,5 +225,75 @@ describe.skipIf(!reachable)('recordCashPayment', () => {
         recordedByUserId: staffUserId,
       }),
     ).rejects.toThrow(/not found/i);
+  });
+});
+
+/**
+ * The list behind the Take Payment screen.
+ *
+ * Its whole job is the subtraction — "what still owes money", not "what happened today".
+ * Get that wrong and the barber is back to comparing the screen against their own memory,
+ * which is the work the screen exists to remove.
+ */
+describe.skipIf(!reachable)('listPayableTickets', () => {
+  beforeEach(seed);
+
+  /** Today in the shop's own timezone, which is the boundary the query uses. */
+  const today = (): string =>
+    DateTime.now().setZone('America/New_York').toFormat('yyyy-MM-dd');
+
+  it('lists a finished walk-in that nobody has been paid for', async () => {
+    const entry = await seatedWalkIn({ status: 'COMPLETED', completedAt: new Date() });
+
+    const tickets = await listPayableTickets(barberId, today());
+
+    expect(tickets).toHaveLength(1);
+    expect(tickets[0]).toMatchObject({
+      kind: 'WALK_IN',
+      id: entry.id,
+      amountCents: LIVE_PRICE,
+      clientFirstName: 'Cash',
+    });
+    expect(tickets[0]?.serviceNames).toEqual([SERVICE_NAME]);
+  });
+
+  it('drops a ticket the moment it is paid for', async () => {
+    const entry = await seatedWalkIn({ status: 'COMPLETED', completedAt: new Date() });
+
+    expect(await listPayableTickets(barberId, today())).toHaveLength(1);
+
+    await recordCashPayment({
+      barberId,
+      queueEntryId: entry.id,
+      tipCents: 0,
+      recordedByUserId: staffUserId,
+    });
+
+    // The row disappearing is the confirmation that the payment landed.
+    expect(await listPayableTickets(barberId, today())).toHaveLength(0);
+  });
+
+  it("never shows another barber's chair", async () => {
+    await seatedWalkIn({ barberId: otherBarberId, status: 'COMPLETED', completedAt: new Date() });
+
+    expect(await listPayableTickets(barberId, today())).toHaveLength(0);
+    expect(await listPayableTickets(otherBarberId, today())).toHaveLength(1);
+  });
+
+  /** The cut about to be paid for is the one still in the chair, so it sorts first. */
+  it('puts whoever is still in the chair above finished cuts', async () => {
+    const finished = await seatedWalkIn({ status: 'COMPLETED', completedAt: new Date() });
+    const inChair = await seatedWalkIn();
+
+    const tickets = await listPayableTickets(barberId, today());
+
+    expect(tickets.map((ticket) => ticket.id)).toEqual([inChair.id, finished.id]);
+    expect(tickets[0]?.finishedAt).toBeNull();
+  });
+
+  it('does not list someone who is still waiting in the line', async () => {
+    await seatedWalkIn({ status: 'WAITING' });
+
+    expect(await listPayableTickets(barberId, today())).toHaveLength(0);
   });
 });

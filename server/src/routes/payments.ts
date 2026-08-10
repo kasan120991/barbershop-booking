@@ -9,15 +9,24 @@
  * and read the board, and it must never be able to record that money changed hands.
  */
 
-import { recordCashPaymentRequestSchema, type PaymentDto } from '@francis/shared';
+import {
+  recordCashPaymentRequestSchema,
+  type PayableTicketDto,
+  type PaymentDto,
+} from '@francis/shared';
 import { Router, type Request } from 'express';
 
-import { UnauthenticatedError, ValidationError } from '../lib/errors.js';
+import { UnauthenticatedError } from '../lib/errors.js';
 import { limiter } from '../lib/rate-limit.js';
 import { toPaymentDto } from '../mappers/payment.js';
+import { toPayableTicketDto } from '../mappers/ticket.js';
 import { requireBarberSelfOrAdmin } from '../middleware/require-auth.js';
 import { auditContext, recordAudit } from '../services/audit.js';
-import { listPaymentsForShopDay, recordCashPayment } from '../services/payments.js';
+import {
+  listPayableTickets,
+  listPaymentsForShopDay,
+  recordCashPayment,
+} from '../services/payments.js';
 
 export const paymentRouter: Router = Router();
 
@@ -80,14 +89,34 @@ paymentRouter.post(
   },
 );
 
+/**
+ * What still owes money on this chair today.
+ *
+ * Separate from `GET .../payments` on purpose: that one answers "what have I taken", this
+ * one answers "what have I not taken yet", and a screen that had to derive the second
+ * from the first would be doing the subtraction the barber came here to avoid.
+ */
+paymentRouter.get(
+  '/barbers/:barberId/payable-tickets',
+  requireBarberSelfOrAdmin((req) => String(req.params.barberId ?? '')),
+  async (req, res) => {
+    const barberId = String(req.params.barberId ?? '');
+    // Omitted means today in the shop's timezone, resolved server-side — see shopDayRange.
+    const date = typeof req.query.date === 'string' ? req.query.date : undefined;
+
+    const tickets = await listPayableTickets(barberId, date);
+    const body: PayableTicketDto[] = tickets.map(toPayableTicketDto);
+
+    res.json({ tickets: body });
+  },
+);
+
 paymentRouter.get(
   '/barbers/:barberId/payments',
   requireBarberSelfOrAdmin((req) => String(req.params.barberId ?? '')),
   async (req, res) => {
     const barberId = String(req.params.barberId ?? '');
-    const date = req.query.date;
-
-    if (typeof date !== 'string') throw new ValidationError('A date is required.');
+    const date = typeof req.query.date === 'string' ? req.query.date : undefined;
 
     const payments = await listPaymentsForShopDay(barberId, date);
     const body: PaymentDto[] = payments.map(toPaymentDto);

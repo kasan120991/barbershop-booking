@@ -114,6 +114,39 @@ export const paymentDtoSchema = z.object({
 export type PaymentDto = z.infer<typeof paymentDtoSchema>;
 
 /**
+ * The two kinds of thing that can be paid for. A booking and a walk-in settle
+ * identically, but they are different rows and the client has to say which.
+ */
+export const TICKET_KIND = {
+  APPOINTMENT: 'APPOINTMENT',
+  WALK_IN: 'WALK_IN',
+} as const;
+export type TicketKind = (typeof TICKET_KIND)[keyof typeof TICKET_KIND];
+
+/**
+ * A finished cut with no payment against it yet.
+ *
+ * Deliberately not "every appointment today" — a screen whose job is *what still owes
+ * money* must not also show what has already been settled, or the barber is left doing
+ * the reconciliation the list was supposed to do.
+ */
+export const payableTicketDtoSchema = z.object({
+  kind: z.enum(Object.values(TICKET_KIND) as [TicketKind, ...TicketKind[]]),
+  /** The appointment id or the queue entry id, depending on `kind`. */
+  id: z.string(),
+  /** First name + last initial, matching the queue board and the calendar. */
+  clientName: z.string(),
+  serviceNames: z.array(z.string()),
+  /** Summed from the price snapshots — the same figure the server will recompute. */
+  amountCents: z.int().nonnegative(),
+  /** Null while they are still in the chair. */
+  finishedAt: z.iso.datetime().nullable(),
+  /** `COMPLETED`, or the still-in-progress status. Drives the row's chip. */
+  status: z.string(),
+});
+export type PayableTicketDto = z.infer<typeof payableTicketDtoSchema>;
+
+/**
  * A tip ceiling, not a fraud control.
  *
  * The realistic failure is a fat-fingered entry on a tablet — $2000 typed where $20.00
