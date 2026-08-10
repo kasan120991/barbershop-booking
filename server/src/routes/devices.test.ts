@@ -117,6 +117,27 @@ describe.skipIf(!reachable)('device pairing', () => {
     expect(device?.pairedAt).not.toBeNull();
   });
 
+  it('tells the screen which type it was paired as', async () => {
+    // The only time the client is ever told. No later request returns it — not
+    // `/queue/board`, not the socket handshake — so a screen that drops it here cannot
+    // re-learn it across a reload, and both `/kiosk` and `/display` lose the ability to
+    // say "you are the other one" before somebody has typed their phone number in.
+    const kiosk = await createDevice('DEVTEST Door tablet', 'KIOSK');
+    const wall = await createDevice('DEVTEST Wall panel', 'DISPLAY');
+
+    const asKiosk = await request(server)
+      .post('/api/devices/pair')
+      .send({ pairingCode: kiosk.pairingCode })
+      .expect(200);
+    expect(asKiosk.body.type).toBe('KIOSK');
+
+    const asDisplay = await request(server)
+      .post('/api/devices/pair')
+      .send({ pairingCode: wall.pairingCode })
+      .expect(200);
+    expect(asDisplay.body.type).toBe('DISPLAY');
+  });
+
   it('accepts the code without its separator', async () => {
     const { pairingCode } = await createDevice();
     await request(server)

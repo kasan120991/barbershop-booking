@@ -30,9 +30,14 @@ kiosk.connect();
 type Screen = 'board' | 'join' | 'done';
 const screen = ref<Screen>('board');
 
-const pairingCode = ref('');
-const pairing = ref(false);
-const pairError = ref<string | null>(null);
+/**
+ * A screen paired as the wall board is not a kiosk and never will be — `POST /queue`
+ * refuses a `DISPLAY` device outright. Saying so here, before anything else renders, is
+ * the whole point of keeping the type: without it this page pairs, loads the menu, draws
+ * the board and runs the entire join flow, then fails with a 403 *after* somebody has
+ * typed their phone number in. Setup mistakes should look like setup mistakes.
+ */
+const wrongScreen = computed(() => kiosk.paired.value && kiosk.deviceType.value === 'DISPLAY');
 
 const form = reactive({
   firstName: '',
@@ -51,60 +56,12 @@ onMounted(async () => {
   if (kiosk.paired.value) await kiosk.loadBoard();
 });
 
-// --- Pairing -------------------------------------------------------------------
-
-async function onPair() {
-  if (pairing.value) return;
-  pairing.value = true;
-  pairError.value = null;
-
-  try {
-    await kiosk.pair(pairingCode.value);
-    pairingCode.value = '';
-    await kiosk.loadBoard();
-  } catch (error) {
-    // The server distinguishes "not valid", "expired" and "already used" — three
-    // different problems, and whoever is holding the tablet needs to know which.
-    pairError.value = toApiFailure(error).message;
-  } finally {
-    pairing.value = false;
-  }
-}
-
 // --- The board ------------------------------------------------------------------
 
-const waiting = computed(
-  () => kiosk.board.value?.entries.filter((entry) => entry.status === 'WAITING') ?? [],
-);
-
-const called = computed(
-  () => kiosk.board.value?.entries.filter((entry) => entry.status === 'CALLED') ?? [],
-);
-
-const chairs = computed(() => kiosk.board.value?.chairs ?? []);
-
-/** The honest headline: the longest anybody currently waiting has been quoted. */
-const longestWait = computed(() =>
-  waiting.value.reduce(
-    (max, entry) => Math.max(max, entry.estimatedWaitMinutes ?? 0),
-    0,
-  ),
-);
-
-function waitLabel(minutes: number | null): string {
-  if (minutes === null) return 'Ask at the desk';
-  if (minutes < 1) return 'You are up';
-  return `about ${String(minutes)} min`;
-}
-
-function clock(iso: string | null): string {
-  if (iso === null) return '';
-  return new Intl.DateTimeFormat('en-US', {
-    hour: 'numeric',
-    minute: '2-digit',
-    timeZone: kiosk.timezone.value,
-  }).format(new Date(iso));
-}
+// `waiting`, `called`, `chairs`, `longestWait`, `waitLabel` and `clock` are the shared
+// screen's, so the wall board and this tablet cannot come to different answers about the
+// same queue while facing each other across the room.
+const { waiting, called, chairs, longestWait, waitLabel, clock } = kiosk;
 
 // --- Joining --------------------------------------------------------------------
 
@@ -223,27 +180,15 @@ const myEntry = computed(
 
 <template>
   <!-- Unpaired ------------------------------------------------------------- -->
-  <section v-if="!kiosk.paired.value" class="pair">
-    <h1>Set this screen up</h1>
+  <DevicePairing v-if="!kiosk.paired.value" what="kiosk" @paired="kiosk.loadBoard()" />
+
+  <!-- Paired as the wall board ---------------------------------------------- -->
+  <section v-else-if="wrongScreen" class="misplaced">
+    <h1>This screen is the wall board</h1>
     <p class="lede">
-      Ask an admin to add a screen in the staff app, then type the code here. It is only
-      needed once.
+      It was paired to show the queue, not to join it. Open <span class="fcb-num">/display</span>
+      on this device, or ask an admin to pair it again as a kiosk.
     </p>
-
-    <div class="pair-form">
-      <InputText
-        v-model="pairingCode"
-        class="code-input fcb-num"
-        inputmode="numeric"
-        autocomplete="off"
-        placeholder="0000-0000"
-        aria-label="Pairing code"
-        @keyup.enter="onPair"
-      />
-      <Button label="Pair" size="large" :loading="pairing" @click="onPair" />
-    </div>
-
-    <Message v-if="pairError" severity="error" :closable="false">{{ pairError }}</Message>
   </section>
 
   <!-- The board ------------------------------------------------------------ -->
@@ -473,34 +418,15 @@ h1 {
   font-size: 0.875rem;
 }
 
-/* --- Pairing ---------------------------------------------------------------- */
+/* --- Wrong screen ------------------------------------------------------------ */
 
-.pair {
+.misplaced {
   margin: auto;
-  max-width: 30rem;
+  max-width: 32rem;
   display: flex;
   flex-direction: column;
-  gap: 1.25rem;
-  text-align: center;
-  align-items: center;
-}
-
-.pair-form {
-  display: flex;
   gap: 0.75rem;
-  align-items: center;
-  flex-wrap: wrap;
-  justify-content: center;
-}
-
-.code-input :deep(input),
-.code-input {
-  font-size: 2rem;
-  letter-spacing: 0.18em;
   text-align: center;
-  /* Wide enough for "0000-0000" WITH the tracking — at 12ch the placeholder was
-     clipped mid-digit, which reads as a broken field rather than a hint. */
-  width: 14ch;
 }
 
 /* --- Board ------------------------------------------------------------------ */

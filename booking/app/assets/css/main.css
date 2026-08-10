@@ -44,6 +44,9 @@
   --fcb-danger: #b4463d;
   --fcb-danger-bg: rgba(210, 100, 92, 0.1);
   --fcb-danger-line: rgba(210, 100, 92, 0.45);
+  /* The same red lifted for charcoal: `--fcb-danger` on the rail is barely a colour. */
+  --fcb-danger-ink: #eab8b3;
+  --fcb-danger-edge: #d2645c;
 
   --fcb-font-display: ui-sans-serif, 'Helvetica Neue', Helvetica, Arial, sans-serif;
   --fcb-font-body: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, Arial,
@@ -114,6 +117,57 @@ body {
 :where(button, a, input, [tabindex]):focus-visible {
   outline: 2px solid var(--fcb-accent-strong);
   outline-offset: 2px;
+}
+
+/**
+ * In-shop screens — the kiosk by the door and the board on the wall.
+ *
+ * This app is themed light because the booking site is read in a hand; a screen that
+ * sits in a room and is on for twelve hours is dark, or it is a lamp. PrimeVue's fields
+ * therefore arrive white-on-white on these two routes, which is the one place the two
+ * decisions collide. Restyling them from the rail tokens is cheaper and far less brittle
+ * than running a second PrimeVue theme for two routes.
+ *
+ * It lives here rather than in a layout because both layouts need it, and the version
+ * that lived in `layouts/kiosk.vue` was gated on that layout's own root class — so the
+ * display's pairing field would have rendered white-on-white on charcoal, which is
+ * invisible rather than merely wrong. One class, worn by both shells.
+ */
+.fcb-screen {
+  min-height: 100%;
+  background: var(--fcb-rail);
+  color: var(--fcb-rail-ink);
+}
+
+.fcb-screen .p-inputtext {
+  background: var(--fcb-rail-raised);
+  border-color: var(--fcb-rail-line);
+  color: var(--fcb-rail-ink);
+}
+
+.fcb-screen .p-inputtext::placeholder {
+  color: var(--fcb-rail-muted);
+}
+
+.fcb-screen .p-inputtext:enabled:focus {
+  border-color: var(--fcb-accent);
+}
+
+.fcb-screen .p-inputtext.p-invalid {
+  border-color: var(--fcb-danger-edge);
+}
+
+/* Messages on these screens are refusals — "code expired", "already in the queue" — and
+   have to be legible against charcoal rather than against the bone they were built for. */
+.fcb-screen .p-message {
+  background: var(--fcb-rail-raised);
+  border-color: var(--fcb-rail-line);
+  color: var(--fcb-rail-ink);
+}
+
+.fcb-screen .p-message-error {
+  border-color: var(--fcb-danger-line);
+  color: var(--fcb-danger-ink);
 }
 
 @media (prefers-reduced-motion: reduce) {

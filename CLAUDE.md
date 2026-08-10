@@ -27,7 +27,7 @@ Do not silently redesign around these. If a task seems to require changing one, 
 | Stripe | Connect **direct charges** on the barber's connected account, no application fee |
 | Cash out | Automatic daily payout (free) **+** manual Instant Payout button (~1.5% fee) |
 | Rent | Tracked in-app, marked paid offline (cash/Zelle/check) |
-| `booking` app | Public online booking **and** a locked-down `/kiosk` route |
+| `booking` app | Public online booking **and** locked-down `/kiosk` and `/display` routes |
 | Roles | `ADMIN` and `BARBER` — a **set**, because the owner also cuts hair |
 | Services & hours | Fully shop-controlled — admin owns menu, prices, durations, schedules |
 | Notifications | None in v1 — in-app and on-screen only |
@@ -254,16 +254,23 @@ Settled while building it:
   take payment. Device requests are CSRF-exempt: a header credential cannot be forged cross-site.
 - **`KIOSK` and `DISPLAY` are a permission, not a label.** Only a kiosk may `POST /queue`; the wall
   display is read-only and is refused. Both read the same redacted board.
-- **The kiosk client must never send credentials** — no `withCredentials` on its socket, no
+- **The pairing response is the only time a screen is told its own type**, so the client stores it
+  beside the token (`fc_device_type`) and each route refuses the other's job up front. Nothing else
+  returns it — not `/queue/board`, not the handshake — so dropping it means a reload cannot re-learn
+  it, and `/kiosk` on a display-paired tablet runs the entire join flow before 403-ing *after* the
+  customer has typed their phone number.
+- **The in-shop client must never send credentials** — no `withCredentials` on its socket, no
   `credentials: 'include'` on its fetches. A session cookie beats a device token on *both*
   transports (deliberately: a signed-in barber on the shop tablet is themselves), and cookies
   ignore ports, so a browser used for both apps on one host would otherwise put the kiosk in the
   `shop` room and put full phone numbers on a screen facing the room. Nothing on the server can
   tell the two cases apart; `realtime.test.ts` pins the precedence so the client rule stays
-  load-bearing rather than folklore.
-- **A 401 on the kiosk means revoked, not expired.** It clears the stored token and returns to the
-  pairing screen — the opposite of the staff app, where a 401 means sign in again. There is nobody
-  at a kiosk to sign in.
+  load-bearing rather than folklore. It lives in **one** place — `useDeviceScreen()` — and both
+  screens build on it, because the failure mode is a second copy that quietly picks up
+  `withCredentials`.
+- **A 401 on a screen means revoked, not expired.** It clears the stored token *and the board* and
+  returns to pairing — the opposite of the staff app, where a 401 means sign in again. There is
+  nobody at a kiosk to sign in, and a revoked wall board must not sit there showing names.
 - **Lockout:** 10 failed logins locks the account until an admin unlocks it, and locking revokes
   existing sessions. Login also sits behind an IP throttle. Failed logins must return an identical
   response for a wrong password and an unknown email, and must burn equivalent CPU (see
@@ -335,6 +342,19 @@ Settled while building it:
 - **Both apps pin their scheme and neither reads `prefers-color-scheme`.** The staff app pins
   dark so a shop tablet cannot flip; the booking site pins light so a customer's OS setting
   cannot restyle a page the shop designed. Same reasoning, opposite direction.
+- **`/kiosk` and `/display` are dark inside a light app, and they share `.fcb-screen`** in
+  `booking/app/assets/css/main.css` — the charcoal ground plus the PrimeVue field and message
+  overrides. It is one class rather than per-layout CSS because these overrides were gated on the
+  kiosk layout's own root class, which would have rendered the display's pairing field
+  white-on-white on charcoal.
+- **The wall display is sized in `--u`, not rem.** `--u: min(1vw, 1.78vh)` on the display shell:
+  at 16:9 that is exactly 1% of the width (what the design was drawn in), and the `vh` term takes
+  over on a shorter panel so type shrinks instead of the queue falling off the bottom. Rem is a
+  reading-distance unit; this screen is read from three metres.
+- **Nothing on the display scrolls, paginates or shrinks to fit.** `MAX_ROWS` is measured against
+  the panel and the surplus becomes "+N more waiting"; more than four chairs pair into two columns
+  rather than clipping. A glance gets one look — hiding a queue position behind a count is honest,
+  leaving a barber off the board entirely is not. Change a font size there and re-measure.
 - **Every phone input is an `InputMask`** with `mask="(999) 999-9999"`, `:auto-clear="false"` and
   `unmask`. All three matter: the default `autoClear` wipes a half-typed number the moment the
   field loses focus, which on the kiosk means somebody glances at the service list and comes back
@@ -449,6 +469,7 @@ is unreachable, so the suite still passes without MAMP running.
 
 Foundation → server+shared skeleton → schema+seed → auth → catalog & schedules → availability &
 booking → queue → realtime → `app` scaffold → admin views → barber views → `booking` scaffold →
-kiosk → Stripe Connect → payouts & rent → reporting → deploy → *(post-MVP)* Vapi.
+kiosk → wall display → Stripe Connect → payouts & rent → reporting → deploy →
+*(post-MVP)* Vapi.
 
 The user directs each phase. Do not jump ahead into a later phase unasked.
