@@ -50,7 +50,13 @@ const shopPhone = computed(() => booking.settings.value?.phone ?? null);
 </script>
 
 <template>
-  <div class="shell">
+  <!--
+    `in-flow` marks the booking wizard, which is the only route that replaces the rail
+    with its own phone shell. Every other page — a confirmation, a payment link — keeps
+    the strip on a phone, because those have no top bar of their own and losing the
+    wordmark would leave a customer on an unbranded page asking for their card.
+  -->
+  <div class="shell" :class="{ 'in-flow': showSummary }">
     <aside class="rail">
       <NuxtLink to="/" class="brand">
         <span class="fcb-pole" aria-hidden="true" />
@@ -328,6 +334,20 @@ const shopPhone = computed(() => booking.settings.value?.phone ?? null);
 
   .pane {
     padding: 1.75rem 1.25rem 3rem;
+  }
+}
+
+/**
+ * On a phone the booking flow drops the rail entirely.
+ *
+ * The strip was costing four summary lines and a wordmark above the question on every
+ * step; the flow's own top bar and bottom sheet carry the same information in a fraction
+ * of the room. Scoped to `.in-flow` so a confirmation or payment page — which has no top
+ * bar to inherit and genuinely needs the brand on it — keeps the strip.
+ */
+@media (max-width: 620px) {
+  .shell.in-flow .rail {
+    display: none;
   }
 }
 </style>

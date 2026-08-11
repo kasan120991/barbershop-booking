@@ -214,11 +214,138 @@ const typedPhone = computed(() => {
 function back(): void {
   booking.goTo(Math.max(1, booking.step.value - 1) as StepIndex);
 }
+
+// --- The phone shell ----------------------------------------------------------
+
+/**
+ * Phones get a different frame around the same five steps: a compact top bar instead of
+ * the summary rail, and a sheet pinned to the bottom instead of a button somewhere down
+ * the page. Everything below is inert above 620px — the desktop and tablet layout is
+ * untouched, and which one you see is decided in CSS rather than by measuring the window,
+ * so the server renders the same markup either way.
+ */
+const STEP_TITLES: Record<number, string> = {
+  1: 'Choose a service',
+  2: 'Choose your barber',
+  3: 'Pick a time',
+  4: 'Who is it for?',
+  5: 'Does this look right?',
+};
+
+const stepTitle = computed(() => STEP_TITLES[booking.step.value] ?? '');
+
+interface PhoneAction {
+  label: string;
+  disabled: boolean;
+  loading: boolean;
+  run: () => void;
+}
+
+/**
+ * Steps 1 and 2 return null on purpose: choosing a service or a barber already advances,
+ * so a button there would be a second way to do one thing — and a disabled one for the
+ * whole time somebody is deciding.
+ */
+const phoneAction = computed<PhoneAction | null>(() => {
+  switch (booking.step.value) {
+    case 3:
+      return {
+        label: 'Continue',
+        disabled: booking.slot.value === null,
+        loading: false,
+        run: () => booking.goTo(4),
+      };
+    case 4:
+      return {
+        label: 'Continue',
+        disabled: !detailsValid.value,
+        loading: false,
+        run: () => booking.goTo(5),
+      };
+    case 5:
+      return {
+        label: 'Book It',
+        disabled: !bookingOpen.value,
+        loading: submitting.value,
+        run: () => void confirm(),
+      };
+    default:
+      return null;
+  }
+});
+
+/** What the sheet reads while it is only peeking. */
+const sheetSummary = computed(() => {
+  const parts: string[] = [];
+  if (booking.service.value) parts.push(booking.service.value.name);
+
+  const barber =
+    booking.resolvedBarber.value?.displayName ??
+    (booking.anyBarber.value ? 'Any barber' : null);
+  if (barber !== null) parts.push(barber);
+
+  return parts.join(' · ');
+});
+
+/**
+ * Times bucketed into Morning / Afternoon / Evening.
+ *
+ * A phone shows a dozen slots as one undifferentiated grid of numbers, which is the thing
+ * that actually makes this step hard to read. The buckets are computed in the SHOP's zone
+ * for the same reason every other time on this page is — somebody booking from an airport
+ * should be told about the shop's afternoon, not their own.
+ *
+ * Empty buckets drop out entirely rather than rendering a heading over nothing.
+ */
+const slotGroups = computed(() => {
+  const zone = booking.timezone.value;
+  const groups: { label: string; slots: Slot[] }[] = [
+    { label: 'Morning', slots: [] },
+    { label: 'Afternoon', slots: [] },
+    { label: 'Evening', slots: [] },
+  ];
+
+  for (const slot of booking.slots.value) {
+    // `h23` rather than `hour12: false`, which reports midnight as 24 in some engines.
+    const hour = Number(
+      new Intl.DateTimeFormat('en-US', {
+        hour: '2-digit',
+        hourCycle: 'h23',
+        timeZone: zone,
+      }).format(new Date(slot.startAt)),
+    );
+
+    const index = hour < 12 ? 0 : hour < 17 ? 1 : 2;
+    groups[index]?.slots.push(slot);
+  }
+
+  return groups.filter((group) => group.slots.length > 0);
+});
 </script>
 
 <template>
   <div class="flow">
-    <BookingSteps />
+    <!--
+      Phone only — `display: none` above 620px, so this costs desktop nothing but the
+      markup. It carries what the rail and the step header carry on a bigger screen: where
+      you are, how far through, and the way back.
+    -->
+    <header class="phone-bar">
+      <button
+        v-if="booking.step.value > 1"
+        type="button"
+        class="phone-back"
+        aria-label="Back"
+        @click="back"
+      >
+        <AngleLeft class="chev" aria-hidden="true" />
+      </button>
+      <span class="phone-title">{{ stepTitle }}</span>
+      <span class="phone-count fcb-num">{{ booking.step.value }} of 5</span>
+    </header>
+
+    <!-- The pips say the same thing as "3 of 5" and cost a whole row to do it. -->
+    <BookingSteps class="wide-only" />
 
     <Message v-if="!bookingOpen" severity="warn" :closable="false" class="closed">
       Online booking is closed right now. Walk in and we will fit you in, or give the shop a
@@ -371,17 +498,35 @@ function back(): void {
           </div>
 
           <template v-else>
-            <div v-if="booking.slots.value.length" class="slots">
-              <button
-                v-for="slot in booking.slots.value"
-                :key="slot.startAt"
-                type="button"
-                class="slot fcb-num"
-                :class="{ on: booking.slot.value?.startAt === slot.startAt }"
-                @click="chooseSlot(slot)"
-              >
-                {{ slotTime(slot.startAt) }}
-              </button>
+            <!--
+              One rendering, read two ways.
+
+              The times are always grouped in the markup, and on a wide screen the group
+              wrappers collapse with `display: contents` so every button becomes a direct
+              item of one continuous grid — exactly the grid this has always been. On a
+              phone the wrappers come back and the headings appear, because a dozen
+              numbers in an undifferentiated block is what makes this step hard to read
+              on a small screen.
+
+              Rendering both shapes and hiding one would have meant two sets of buttons in
+              the DOM and two sets of tab stops for the same times.
+            -->
+            <div v-if="booking.slots.value.length" class="slot-groups">
+              <div v-for="group in slotGroups" :key="group.label" class="slot-group">
+                <span class="group-label">{{ group.label }}</span>
+                <div class="slots">
+                  <button
+                    v-for="slot in group.slots"
+                    :key="slot.startAt"
+                    type="button"
+                    class="slot fcb-num"
+                    :class="{ on: booking.slot.value?.startAt === slot.startAt }"
+                    @click="chooseSlot(slot)"
+                  >
+                    {{ slotTime(slot.startAt) }}
+                  </button>
+                </div>
+              </div>
             </div>
 
             <!-- The engine explains itself rather than shrugging: closed, booked out and
@@ -529,6 +674,30 @@ function back(): void {
         </section>
       </Transition>
     </div>
+
+    <!--
+      Phone only. The summary the rail shows on a desktop, reduced to the line that
+      matters, with the step's action beside it — pinned where a thumb already is rather
+      than at the bottom of however long the content happens to be.
+    -->
+    <footer v-if="bookingOpen" class="phone-sheet">
+      <span class="grab" aria-hidden="true" />
+      <div class="sheet-row">
+        <span v-if="sheetSummary" class="sheet-k">{{ sheetSummary }}</span>
+        <span v-else class="sheet-k empty">Nothing chosen yet</span>
+        <span v-if="booking.totalCents.value > 0" class="sheet-v fcb-num">
+          {{ formatCents(booking.totalCents.value) }}
+        </span>
+      </div>
+      <Button
+        v-if="phoneAction"
+        :label="phoneAction.label"
+        :disabled="phoneAction.disabled"
+        :loading="phoneAction.loading"
+        fluid
+        @click="phoneAction.run"
+      />
+    </footer>
   </div>
 </template>
 
@@ -848,10 +1017,27 @@ h1 {
   font-weight: 650;
 }
 
-.slots {
+/**
+ * The slot grid, built from grouped markup.
+ *
+ * `display: contents` on the wrappers dissolves them, so the buttons inside are the grid
+ * items rather than three nested boxes — which keeps this one continuous grid that fills
+ * and wraps as it always has, instead of three grids that each break a row early.
+ * The phone rules further down put the wrappers back.
+ */
+.slot-groups {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(6.25rem, 1fr));
   gap: 0.5rem;
+}
+
+.slot-group,
+.slots {
+  display: contents;
+}
+
+.group-label {
+  display: none;
 }
 
 .slot {
@@ -987,6 +1173,17 @@ h1 {
   font-weight: 650;
 }
 
+/**
+ * The phone shell, and everything it replaces.
+ *
+ * Hidden by default rather than shown by default: above the breakpoint these are simply
+ * not there, so a desktop render is exactly what it was before any of this existed.
+ */
+.phone-bar,
+.phone-sheet {
+  display: none;
+}
+
 @media (max-width: 620px) {
   .grid-2,
   .row {
@@ -1000,6 +1197,180 @@ h1 {
   .continue :deep(.p-button) {
     width: 100%;
     justify-content: center;
+  }
+
+  /* --- The top bar --------------------------------------------------------- */
+
+  .phone-bar {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    position: sticky;
+    top: 0;
+    z-index: 3;
+    /* Out to the pane's edges, since it is the top of the screen rather than a card. */
+    margin: -1.75rem -1.25rem 0;
+    padding: 0.7rem 1rem;
+    background: var(--fcb-surface);
+    border-bottom: 1px solid var(--fcb-line);
+  }
+
+  .phone-back {
+    width: 2rem;
+    height: 2rem;
+    flex: none;
+    display: grid;
+    place-items: center;
+    border: 1px solid var(--fcb-line);
+    border-radius: 50%;
+    background: var(--fcb-surface);
+    color: var(--fcb-ink-muted);
+    cursor: pointer;
+  }
+
+  .phone-title {
+    font-size: 0.9rem;
+    font-weight: 640;
+    letter-spacing: -0.01em;
+  }
+
+  .phone-count {
+    margin-left: auto;
+    font-size: 0.75rem;
+    color: var(--fcb-ink-faint);
+  }
+
+  /*
+   * The step's own header now duplicates the top bar, so only the sentence under it
+   * survives. Same for the back button and the progress pips — "3 of 5" says it in less
+   * room, and room is the whole reason for this layout.
+   */
+  .head h1,
+  .head .back,
+  .continue {
+    display: none;
+  }
+
+  .head {
+    display: block;
+  }
+
+  /* --- Times ---------------------------------------------------------------- */
+
+  .wide-only {
+    display: none;
+  }
+
+  /* The wrappers come back, so the buckets read as buckets rather than one long block. */
+  .slot-groups {
+    display: flex;
+    flex-direction: column;
+    gap: 0.85rem;
+  }
+
+  .slot-group {
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
+  }
+
+  .slots {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(5rem, 1fr));
+    gap: 0.4rem;
+  }
+
+  .group-label {
+    display: block;
+    font-size: 0.625rem;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--fcb-ink-faint);
+    font-weight: 660;
+  }
+
+  /*
+   * The week strip scrolls sideways instead of squeezing seven days across ~320px. Each
+   * day then gets a thumb-sized target rather than the ~40px it had, and the nav buttons
+   * stay because next week has to remain reachable.
+   */
+  .days {
+    display: flex;
+    overflow-x: auto;
+    gap: 0.35rem;
+    scrollbar-width: none;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .days::-webkit-scrollbar {
+    display: none;
+  }
+
+  .day {
+    flex: none;
+    min-width: 3rem;
+    min-height: 2.75rem;
+  }
+
+  .slot {
+    min-height: 2.75rem;
+  }
+
+  /* --- The sheet ------------------------------------------------------------ */
+
+  .phone-sheet {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+    position: fixed;
+    inset: auto 0 0;
+    z-index: 4;
+    padding: 0.5rem 1rem calc(0.75rem + env(safe-area-inset-bottom, 0px));
+    background: var(--fcb-surface);
+    border-top: 1px solid var(--fcb-line);
+    border-radius: 14px 14px 0 0;
+    box-shadow: 0 -10px 26px -20px rgb(30 30 35 / 60%);
+  }
+
+  .grab {
+    width: 2.25rem;
+    height: 3px;
+    border-radius: 2px;
+    background: var(--fcb-line-strong);
+    margin: 0 auto 0.15rem;
+  }
+
+  .sheet-row {
+    display: flex;
+    align-items: baseline;
+    gap: 0.75rem;
+    font-size: 0.82rem;
+  }
+
+  .sheet-k {
+    color: var(--fcb-ink-muted);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .sheet-k.empty {
+    color: var(--fcb-ink-faint);
+  }
+
+  .sheet-v {
+    margin-left: auto;
+    font-weight: 680;
+    font-size: 0.95rem;
+    color: var(--fcb-ink);
+  }
+
+  /*
+   * Room for the sheet to sit over. Without it the last service card or the Book It
+   * summary ends up underneath a panel that looks like part of the page.
+   */
+  .flow {
+    padding-bottom: 7rem;
   }
 }
 </style>
