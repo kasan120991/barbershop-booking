@@ -979,12 +979,23 @@ function rowClass(item: DayItem) {
   margin-left: 0.25rem;
 }
 
+/*
+ * A rule above the note, so it reads as a second kind of thing rather than a third
+ * line of the row.
+ *
+ * It starts at the content column rather than the card edge because it is a divider
+ * *within* a row, not between two of them — running it full width would compete with
+ * the card border a few pixels below it. `--fc-line-soft` for the same reason: a
+ * separator inside a card should be the quietest line on the screen.
+ */
 .note {
   grid-area: note;
   display: flex;
   gap: 0.4rem;
   align-items: baseline;
-  padding-top: 0.3rem;
+  margin-top: 0.4rem;
+  padding-top: 0.4rem;
+  border-top: 1px solid var(--fc-line-soft);
   min-width: 0;
 }
 

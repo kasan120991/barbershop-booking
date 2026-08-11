@@ -775,7 +775,7 @@ function openMenu(event: Event, entry: QueueEntryDto) {
     minmax(5.5rem, 0.85fr) 7rem 7rem 11.5rem;
   grid-template-areas:
     'pos client service barber waited ready acts'
-    '.   note   note    note   note   note  note';
+    '.   note   note    note   note   note  .';
   gap: 0 0.75rem;
   align-items: center;
 }
@@ -943,12 +943,23 @@ function openMenu(event: Event, entry: QueueEntryDto) {
   height: 0.875rem;
 }
 
+/*
+ * A rule above the note, so it reads as a second kind of thing rather than a third
+ * line of the row.
+ *
+ * It starts at the content column rather than the card edge because it is a divider
+ * *within* a row, not between two of them — running it full width would compete with
+ * the card border a few pixels below it. `--fc-line-soft` for the same reason: a
+ * separator inside a card should be the quietest line on the screen.
+ */
 .note {
   grid-area: note;
   display: flex;
   gap: 0.4rem;
   align-items: baseline;
-  padding-top: 0.3rem;
+  margin-top: 0.4rem;
+  padding-top: 0.4rem;
+  border-top: 1px solid var(--fc-line-soft);
   min-width: 0;
 }
 
