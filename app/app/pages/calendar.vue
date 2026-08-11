@@ -1,6 +1,6 @@
 <script setup lang="ts">
 /**
- * Calendar — for now, a read-only window onto the availability engine.
+ * Calendar — a window onto the availability engine, and now a way to book through it.
  *
  * The full calendar is Phase 9. This exists because the slot engine is the most
  * intricate logic in the system and "the tests pass" is a lot to take on trust: pick
@@ -26,6 +26,7 @@ const barberId = ref<string | null>(null);
 const serviceIds = ref<string[]>([]);
 const date = ref('');
 const result = ref<AvailabilityResponse | null>(null);
+const bookingOpen = ref(false);
 const loading = ref(false);
 
 /** Defaults that show something useful immediately rather than an empty form. */
@@ -137,7 +138,10 @@ const dayLabel = computed(() => {
             · times shown in {{ shopTimezone }}
           </p>
         </div>
-        <ProgressSpinner v-if="loading" style="width: 1.25rem; height: 1.25rem" :stroke-width="6" />
+        <span class="head-right">
+          <ProgressSpinner v-if="loading" style="width: 1.25rem; height: 1.25rem" :stroke-width="6" />
+          <Button label="Add Appointment" size="small" @click="bookingOpen = true" />
+        </span>
       </header>
 
       <div v-if="result && result.slots.length" class="slots">
@@ -153,8 +157,16 @@ const dayLabel = computed(() => {
       <p v-else class="sub">Pick a barber, a date and at least one service.</p>
     </section>
 
+    <!-- The page was read-only for eight phases; this is the write half arriving. It
+         opens on whatever barber and date are already being inspected. -->
+    <AppointmentsAddAppointmentDialog
+      v-model:visible="bookingOpen"
+      :date="date"
+      @booked="load()"
+    />
+
     <p class="footnote">
-      Read-only for now — booking from the calendar arrives with the admin views. Availability
+      The slot list is still read-only; booking goes through the dialog, which asks the same engine. Availability
       already accounts for shop hours, closures, this barber's shifts and time off, existing
       appointments, the turnaround buffer, and the minimum notice window.
     </p>
@@ -195,6 +207,12 @@ const dayLabel = computed(() => {
   border-radius: 8px;
   background: var(--fc-surface);
   padding: 1.25rem;
+}
+
+.head-right {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
 }
 
 .results-head {

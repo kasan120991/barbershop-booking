@@ -11,7 +11,7 @@
  * to write one.
  */
 
-import { formatDuration, normalizePhone, type AppointmentSource } from '@francis/shared';
+import { formatDuration, type AppointmentSource } from '@francis/shared';
 import { DateTime } from 'luxon';
 
 import { logger } from '../lib/logger.js';
@@ -19,6 +19,7 @@ import { logger } from '../lib/logger.js';
 import type { AppointmentStatus } from '../generated/prisma/enums.js';
 import { ConflictError, NotFoundError, ValidationError } from '../lib/errors.js';
 import { prisma } from '../lib/prisma.js';
+import { findOrCreateClient } from './clients.js';
 import { refreshQueueEstimates } from './queue.js';
 
 /**
@@ -142,21 +143,9 @@ export async function createAppointment(input: CreateAppointmentInput) {
     }
   }
 
-  // The phone number IS the client identity, so it is normalised before lookup —
-  // "(415) 555-0123" and "+14155550123" must not become two people.
-  const phoneE164 = normalizePhone(input.client.phone);
-  if (!phoneE164) throw new ValidationError('That phone number does not look right.');
-
-  const client = await prisma.client.upsert({
-    where: { phoneE164 },
-    update: {},
-    create: {
-      phoneE164,
-      firstName: input.client.firstName.trim(),
-      lastName: input.client.lastName?.trim() || null,
-    },
-  });
-  if (client.isBlocked) throw new ValidationError('That number cannot book online.');
+  // The phone number IS the client identity — normalisation, the findOrCreate and the
+  // blocked check all live in `services/clients.ts`, which the queue join shares.
+  const client = await findOrCreateClient(input.client, 'That number cannot book online.');
 
   /** Local shop date, which is what the lock is keyed on. */
   const day = DateTime.fromJSDate(startAt).setZone(settings.timezone).toFormat('yyyy-MM-dd');

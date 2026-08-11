@@ -45,13 +45,20 @@ export function limiter(options: {
   limit: number;
   message: string;
   keyGenerator?: Options['keyGenerator'];
+  /**
+   * An extra reason to let a request past, ORed with the test skip.
+   *
+   * Callers must not pass `skip` themselves — it would replace the test skip rather
+   * than add to it, and the whole suite would start tripping limits.
+   */
+  skipWhen?: (req: Parameters<NonNullable<Options['skip']>>[0]) => boolean;
 }) {
   return rateLimit({
     windowMs: options.windowMs,
     limit: options.limit,
     standardHeaders: 'draft-7',
     legacyHeaders: false,
-    skip: () => isTest,
+    skip: (req) => isTest || (options.skipWhen?.(req) ?? false),
     ...(options.keyGenerator === undefined ? {} : { keyGenerator: options.keyGenerator }),
     /**
      * Handed to `next` rather than written directly, so the response goes through the

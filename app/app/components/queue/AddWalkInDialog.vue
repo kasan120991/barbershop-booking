@@ -11,6 +11,10 @@
  * Picking services first and a barber second is deliberate: the other order lets
  * someone choose a barber and then a service that barber does not perform, and the
  * only honest thing to do at that point is take the choice away again.
+ *
+ * The number comes before either of them, in `ClientLookupFields`. It is the identity,
+ * so knowing it early is what lets the desk be told who is standing there — and told that
+ * the number is blocked before, rather than after, the rest of the form is filled in.
  */
 
 import {
@@ -142,50 +146,18 @@ async function onAdd() {
     @update:visible="emit('update:visible', $event)"
   >
     <div class="form">
-      <div class="row">
-        <div class="field">
-          <label for="w-first" class="fc-label">First Name</label>
-          <InputText
-            id="w-first"
-            v-model="form.firstName"
-            :invalid="Boolean(fieldErrors.firstName)"
-            fluid
-          />
-          <p v-if="fieldErrors.firstName" class="err">{{ fieldErrors.firstName[0] }}</p>
-        </div>
-        <div class="field">
-          <label for="w-last" class="fc-label">Last Name</label>
-          <InputText id="w-last" v-model="form.lastName" fluid />
-          <p class="hint">Only the initial is ever shown.</p>
-        </div>
-      </div>
-
-      <div class="field">
-        <label for="w-phone" class="fc-label">Phone</label>
-        <!--
-          `auto-clear` off and `unmask` on, and both matter.
-
-          The default clears a half-typed number the moment the field loses focus —
-          somebody glances at the service list and comes back to an empty box with no
-          explanation. And `unmask` puts ten digits in the model rather than the
-          punctuation, so what the form holds is data; formatting is a display decision
-          made once, in `formatPhone`.
-        -->
-        <InputMask
-          id="w-phone"
-          v-model="form.phone"
-          mask="(999) 999-9999"
-          :auto-clear="false"
-          unmask
-          type="tel"
-          inputmode="tel"
-          placeholder="(415) 555-0123"
-          :invalid="Boolean(fieldErrors.phone)"
-          fluid
-        />
-        <p v-if="fieldErrors.phone" class="err">{{ fieldErrors.phone[0] }}</p>
-        <p v-else class="hint">How we know who they are. A number we already have is reused.</p>
-      </div>
+      <!--
+        The number leads, and a known one is confirmed before anything else is typed —
+        including whether they are blocked, which used to surface at submit after the
+        whole form had been filled in. Shared with the appointment dialog.
+      -->
+      <ClientLookupFields
+        v-model:phone="form.phone"
+        v-model:first-name="form.firstName"
+        v-model:last-name="form.lastName"
+        :field-errors="fieldErrors"
+        id-prefix="w"
+      />
 
       <div class="field">
         <label for="w-services" class="fc-label">Services</label>

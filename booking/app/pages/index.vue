@@ -32,6 +32,7 @@ import type { Slot, StepIndex } from '../composables/useBooking';
 useHead({ title: 'Book an appointment — Francis Cutz' });
 
 const booking = useBooking();
+const recognise = useRecognise();
 const { notifyApiFailure } = useNotify();
 const api = useApi();
 
@@ -193,6 +194,18 @@ async function confirm(): Promise<void> {
  * digits, which makes the count correct by construction; stating it as digits keeps it
  * that way if the field ever changes again.
  */
+/**
+ * Asks whether the number and the name go together once both are complete.
+ *
+ * Watched together rather than separately because the question needs both halves — and
+ * because a customer usually types the number, then the name, so a watcher on the phone
+ * alone would fire against an empty name every time.
+ */
+watch(
+  () => [booking.details.value.phone, booking.details.value.firstName] as const,
+  ([phone, firstName]) => recognise.check(phone, firstName),
+);
+
 const detailsValid = computed(
   () =>
     booking.details.value.firstName.trim().length > 0 &&
@@ -556,30 +569,10 @@ const slotGroups = computed(() => {
           </header>
 
           <div class="form">
-            <div class="row">
-              <div class="field">
-                <label for="b-first" class="fcb-label">First name</label>
-                <InputText
-                  id="b-first"
-                  v-model="booking.details.value.firstName"
-                  :invalid="Boolean(fieldErrors.firstName)"
-                  autocomplete="given-name"
-                  fluid
-                />
-                <p v-if="fieldErrors.firstName" class="err">{{ fieldErrors.firstName[0] }}</p>
-              </div>
-              <div class="field">
-                <label for="b-last" class="fcb-label">Last name</label>
-                <InputText
-                  id="b-last"
-                  v-model="booking.details.value.lastName"
-                  autocomplete="family-name"
-                  fluid
-                />
-                <p class="hint">Optional. Only your initial is ever shown in the shop.</p>
-              </div>
-            </div>
-
+            <!--
+              The number leads. It is the identity — the shop finds you by it, and a
+              number it already has is reused rather than making a second you.
+            -->
             <div class="field">
               <label for="b-phone" class="fcb-label">Mobile number</label>
               <!-- `auto-clear` off so a half-typed number survives a glance away, and
@@ -601,6 +594,41 @@ const slotGroups = computed(() => {
               <p v-else class="hint">
                 We do not text you — it is how the shop finds your booking at the door.
               </p>
+            </div>
+
+            <div class="field">
+              <label for="b-first" class="fcb-label">First name</label>
+              <InputText
+                id="b-first"
+                v-model="booking.details.value.firstName"
+                :invalid="Boolean(fieldErrors.firstName)"
+                autocomplete="given-name"
+                fluid
+              />
+              <p v-if="fieldErrors.firstName" class="err">{{ fieldErrors.firstName[0] }}</p>
+              <p v-else-if="recognise.recognised.value" class="hint welcome">
+                Welcome back, {{ booking.details.value.firstName.trim() }}.
+              </p>
+            </div>
+
+            <!--
+              Recognised, so the rest is already on file — and the server would have used
+              the stored name whatever was typed here. Nothing about who they are came
+              back over the wire to work this out; only that the pair matched.
+            -->
+            <p v-if="recognise.recognised.value" class="known">
+              We already have the rest — no need to type your last name.
+            </p>
+
+            <div v-else class="field">
+              <label for="b-last" class="fcb-label">Last name</label>
+              <InputText
+                id="b-last"
+                v-model="booking.details.value.lastName"
+                autocomplete="family-name"
+                fluid
+              />
+              <p class="hint">Optional. Only your initial is ever shown in the shop.</p>
             </div>
           </div>
 
@@ -1114,6 +1142,22 @@ h1 {
 
 .hint {
   margin: 0;
+  font-size: 0.8125rem;
+  color: var(--fcb-ink-faint);
+}
+
+/* The greeting is the only thing on this page that knows anything about you, and it
+   knows it because you typed it. */
+.hint.welcome {
+  color: var(--fcb-accent);
+  font-weight: 600;
+}
+
+.known {
+  margin: 0;
+  border: 1px dashed var(--fcb-line);
+  border-radius: 6px;
+  padding: 0.6rem 0.75rem;
   font-size: 0.8125rem;
   color: var(--fcb-ink-faint);
 }

@@ -28,6 +28,7 @@ definePageMeta({ layout: 'kiosk' });
 useHead({ title: 'Join the queue — Francis Cutz' });
 
 const kiosk = useKiosk();
+const recognise = useRecognise();
 
 /** Client-only: the token lives in localStorage, which does not exist during SSR. */
 kiosk.connect();
@@ -106,6 +107,12 @@ const totals = computed(() => {
   };
 });
 
+/** Both halves together — see the note in `useRecognise`. */
+watch(
+  () => [form.phone, form.firstName] as const,
+  ([phone, firstName]) => recognise.check(phone, firstName),
+);
+
 async function onJoin() {
   if (joining.value) return;
   joinError.value = null;
@@ -170,6 +177,8 @@ function backToBoard() {
   if (countdown !== undefined) clearInterval(countdown);
   countdown = undefined;
   joinedId.value = null;
+  // A greeting left standing is the last person's name on a shared screen.
+  recognise.reset();
   screen.value = 'board';
 }
 
@@ -310,26 +319,6 @@ const myEntry = computed(
       </div>
     </div>
 
-    <div class="row-2">
-      <div class="field">
-        <label for="k-first" class="fcb-label">Your name</label>
-        <InputText
-          id="k-first"
-          v-model="form.firstName"
-          class="big"
-          autocomplete="off"
-          :invalid="Boolean(fieldErrors.firstName)"
-          fluid
-        />
-        <p v-if="fieldErrors.firstName" class="err">{{ fieldErrors.firstName[0] }}</p>
-      </div>
-      <div class="field">
-        <label for="k-last" class="fcb-label">Last name</label>
-        <InputText id="k-last" v-model="form.lastName" class="big" autocomplete="off" fluid />
-        <p class="hint">Only the initial is shown.</p>
-      </div>
-    </div>
-
     <div class="field">
       <label for="k-phone" class="fcb-label">Mobile number</label>
       <!--
@@ -353,6 +342,34 @@ const myEntry = computed(
       />
       <p v-if="fieldErrors.phone" class="err">{{ fieldErrors.phone[0] }}</p>
       <p v-else class="hint">So we can find you if you step out.</p>
+    </div>
+
+    <div class="field">
+      <label for="k-first" class="fcb-label">Your name</label>
+      <InputText
+        id="k-first"
+        v-model="form.firstName"
+        class="big"
+        autocomplete="off"
+        :invalid="Boolean(fieldErrors.firstName)"
+        fluid
+      />
+      <p v-if="fieldErrors.firstName" class="err">{{ fieldErrors.firstName[0] }}</p>
+      <p v-else-if="recognise.recognised.value" class="hint welcome">
+        Welcome back, {{ form.firstName.trim() }}.
+      </p>
+    </div>
+
+    <!-- Recognised, so the rest is on file. Nothing about who they are came back over
+         the wire to work that out — only that the number and the name matched. -->
+    <p v-if="recognise.recognised.value" class="known">
+      We already have the rest — no need to type your last name.
+    </p>
+
+    <div v-else class="field">
+      <label for="k-last" class="fcb-label">Last name</label>
+      <InputText id="k-last" v-model="form.lastName" class="big" autocomplete="off" fluid />
+      <p class="hint">Only the initial is shown.</p>
     </div>
 
     <Message v-if="joinError" severity="error" :closable="false">{{ joinError }}</Message>
@@ -421,6 +438,21 @@ h1 {
   margin: 0.375rem 0 0;
   color: var(--fcb-rail-muted);
   font-size: 0.875rem;
+}
+
+/* The greeting, and the box that replaces the last-name field once it is not needed. */
+.hint.welcome {
+  color: var(--fcb-accent);
+  font-weight: 600;
+}
+
+.known {
+  margin: 0;
+  border: 1px dashed var(--fcb-rail-line, var(--fcb-line));
+  border-radius: 8px;
+  padding: 0.75rem 0.9rem;
+  font-size: 0.9375rem;
+  color: var(--fcb-rail-muted, var(--fcb-ink-faint));
 }
 
 /* --- Wrong screen ------------------------------------------------------------ */

@@ -61,6 +61,16 @@ const joinPhoneLimit = limiter({
   windowMs: 60 * 60 * 1000,
   limit: 5,
   message: 'That number has joined the queue several times already today.',
+  /**
+   * Staff are not rate-limited by their customer's number.
+   *
+   * The limiter is registered before any auth check, so the desk shared this bucket with
+   * the public: one parent booking four children under one number came within a booking
+   * of exhausting it, and a staff appointment form makes that an ordinary Saturday. The
+   * IP limit still applies, and a signed-in member of staff is accountable by name in the
+   * audit log besides.
+   */
+  skipWhen: (req) => (req as { auth?: { kind?: string } }).auth?.kind === 'user',
   keyGenerator: (req) => {
     const body = req.body as { phone?: unknown };
     const phone = typeof body?.phone === 'string' ? normalizePhone(body.phone) : null;

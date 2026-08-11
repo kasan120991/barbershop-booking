@@ -54,6 +54,19 @@ export function useShopClock() {
     }).format(typeof iso === 'string' ? new Date(iso) : iso);
   }
 
+  /** The hour of the shop's day an instant falls in, 0–23. For bucketing, not display. */
+  function hourOf(iso: string | Date): number {
+    const date = typeof iso === 'string' ? new Date(iso) : iso;
+    const hour = new Intl.DateTimeFormat('en-US', {
+      timeZone: timezone.value,
+      hour12: false,
+      hour: '2-digit',
+    }).formatToParts(date).find((part) => part.type === 'hour')?.value;
+
+    // `hour12: false` renders midnight as 24 in some engines.
+    return Number(hour ?? '0') % 24;
+  }
+
   /** The shop-local `YYYY-MM-DD` an instant falls on — the day it belongs to here. */
   function localDate(iso: string | Date): string {
     const date = typeof iso === 'string' ? new Date(iso) : iso;
@@ -191,6 +204,7 @@ export function useShopClock() {
     timezone,
     ensureLoaded,
     clock,
+    hourOf,
     localDate,
     dayRange,
     rangeOfDays,

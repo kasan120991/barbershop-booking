@@ -25,7 +25,6 @@
 
 import {
   ACTIVE_QUEUE_STATUSES,
-  normalizePhone,
   QUEUE_STATUS,
   type AppointmentSource,
   type QueueStatus,
@@ -35,6 +34,7 @@ import { DateTime } from 'luxon';
 import { ConflictError, NotFoundError, ValidationError } from '../lib/errors.js';
 import { prisma } from '../lib/prisma.js';
 import { broadcastQueueBoard } from '../realtime/broadcast.js';
+import { findOrCreateClient } from './clients.js';
 import { computeFreeIntervals, loadDaySnapshots } from './availability.js';
 import {
   intersectIntervals,
@@ -563,19 +563,7 @@ export async function joinQueue(input: JoinQueueInput): Promise<QueueMutation> {
     }
   }
 
-  const phoneE164 = normalizePhone(input.client.phone);
-  if (!phoneE164) throw new ValidationError('That phone number does not look right.');
-
-  const client = await prisma.client.upsert({
-    where: { phoneE164 },
-    update: {},
-    create: {
-      phoneE164,
-      firstName: input.client.firstName.trim(),
-      lastName: input.client.lastName?.trim() || null,
-    },
-  });
-  if (client.isBlocked) throw new ValidationError('That number cannot join the queue.');
+  const client = await findOrCreateClient(input.client, 'That number cannot join the queue.');
 
   /**
    * One active entry per client. A kiosk double-tap and a deliberate re-join to get a

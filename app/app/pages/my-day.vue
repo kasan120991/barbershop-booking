@@ -49,6 +49,7 @@ const barberId = computed(() => auth.user?.barberId ?? null);
 const busy = reactive(new Set<string>());
 
 const view = ref<'day' | 'week'>('day');
+const bookingOpen = ref(false);
 const showVoids = ref(false);
 
 /**
@@ -465,6 +466,7 @@ function rowClass(item: DayItem) {
         </div>
 
         <div class="views">
+          <Button label="Add Appointment" size="small" @click="bookingOpen = true" />
           <Button
             label="Day"
             size="small"
@@ -680,6 +682,15 @@ function rowClass(item: DayItem) {
     </template>
 
     <Menu ref="menu" :model="menuItems" popup />
+
+    <!-- Preset to the signed-in barber: this page is one chair, and booking somebody
+         else's is what the Calendar is for. -->
+    <AppointmentsAddAppointmentDialog
+      v-model:visible="bookingOpen"
+      :locked-barber-id="barberId"
+      :date="cursor"
+      @booked="load()"
+    />
   </div>
 </template>
 
