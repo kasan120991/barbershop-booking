@@ -792,10 +792,18 @@ function rowClass(item: DayItem) {
     5.5rem 7.5rem 11.5rem;
   grid-template-areas:
     'when who  what price state acts'
-    'when note note note  note  acts';
+    '.    note note note  note  .';
   gap: 0 0.75rem;
   align-items: center;
 }
+
+/*
+ * The time and the buttons stop at the first row rather than spanning the note.
+ *
+ * `align-items: center` centres each cell in its own area, so while these covered both
+ * rows they centred against the note as well and sat below the client name they belong
+ * to — on the rows carrying a note only, which is what made it look like a glitch.
+ */
 
 .head-row {
   padding: 0 0.75rem 0.3rem;

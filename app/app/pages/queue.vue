@@ -775,10 +775,19 @@ function openMenu(event: Event, entry: QueueEntryDto) {
     minmax(5.5rem, 0.85fr) 7rem 7rem 11.5rem;
   grid-template-areas:
     'pos client service barber waited ready acts'
-    'pos note   note    note   note   note  note';
+    '.   note   note    note   note   note  note';
   gap: 0 0.75rem;
   align-items: center;
 }
+
+/*
+ * The position column stops at the first row rather than spanning the note.
+ *
+ * `align-items: center` centres each cell in its own area, so while `pos` covered both
+ * rows it centred against the note as well and dropped ~12px below the name it belongs
+ * to — visible only on the rows that happen to carry a note, which is why it read as a
+ * rendering glitch rather than a rule.
+ */
 
 .head-row {
   padding: 0 0.75rem 0.3rem;
