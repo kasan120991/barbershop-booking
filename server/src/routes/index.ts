@@ -8,6 +8,7 @@ import { connectRouter } from './connect.js';
 import { deviceRouter } from './devices.js';
 import { healthRouter } from './health.js';
 import { paymentRouter } from './payments.js';
+import { payoutRouter } from './payouts.js';
 import { queueRouter } from './queue.js';
 import { staffRouter } from './staff.js';
 
@@ -22,5 +23,6 @@ apiRouter.use(catalogRouter);
 apiRouter.use(barberRouter);
 apiRouter.use(connectRouter);
 apiRouter.use(paymentRouter);
+apiRouter.use(payoutRouter);
 apiRouter.use(bookingRouter);
 apiRouter.use(queueRouter);

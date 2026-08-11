@@ -44,12 +44,24 @@ let barberId: string;
 
 async function cleanup() {
   await prisma.webhookEvent.deleteMany({ where: { stripeEventId: { startsWith: EVENT_PREFIX } } });
-  // Payments hold a required barberId, so they go before the barber they point at.
-  await prisma.payment.deleteMany({ where: { barber: { user: { email: { contains: DOMAIN } } } } });
-  // Audit rows are keyed by the entity they describe, so both entities have to be named —
-  // the payment ones outlive the payment row and would otherwise accumulate across tests.
+  /**
+   * Payments and payouts both hold a required `barberId`, so they go before the barber
+   * they point at. `Payout.barber` in particular has no `onDelete` clause — it restricts —
+   * so a leftover payout row fails the barber delete rather than cascading quietly.
+   */
+  const barberScope = { barber: { user: { email: { contains: DOMAIN } } } };
+  await prisma.payment.deleteMany({ where: barberScope });
+  await prisma.payout.deleteMany({ where: barberScope });
+
+  // Audit rows are keyed by the entity they describe, so each entity has to be named —
+  // they outlive the rows they describe and would otherwise accumulate across tests.
   await prisma.auditLog.deleteMany({
-    where: { entityId: { in: [barberId ?? '', PAYMENT_ID] } },
+    where: {
+      OR: [
+        { entityId: { in: [barberId ?? '', PAYMENT_ID] } },
+        { entityId: { startsWith: 'po_whtest_' } },
+      ],
+    },
   });
   await prisma.barber.deleteMany({ where: { user: { email: { contains: DOMAIN } } } });
   await prisma.userRole.deleteMany({ where: { user: { email: { contains: DOMAIN } } } });
@@ -230,6 +242,9 @@ describe.skipIf(!reachable)('stripe webhook', () => {
    */
   it('acknowledges an event type it does not handle', async () => {
     const eventId = `${EVENT_PREFIX}other`;
+    // `balance.available` is a real connected-account event we have no use for. This test
+    // used `payout.paid` until payouts were handled, which is the hazard with picking an
+    // example: it stops being an example.
     const payload = JSON.stringify({
       id: eventId,
       object: 'event',
@@ -238,16 +253,16 @@ describe.skipIf(!reachable)('stripe webhook', () => {
       livemode: false,
       pending_webhooks: 0,
       request: { id: null, idempotency_key: null },
-      type: 'payout.paid',
+      type: 'balance.available',
       account: ACCOUNT_ID,
-      data: { object: { id: 'po_test', object: 'payout' } },
+      data: { object: { object: 'balance', available: [] } },
     });
 
     const response = await post(payload, sign(payload)).expect(200);
     expect(response.body).toMatchObject({ received: true, handled: false });
 
     const record = await prisma.webhookEvent.findUnique({ where: { stripeEventId: eventId } });
-    expect(record?.type).toBe('payout.paid');
+    expect(record?.type).toBe('balance.available');
     expect(record?.processedAt).not.toBeNull();
   });
 
@@ -295,6 +310,33 @@ describe.skipIf(!reachable)('payment_intent events', () => {
       },
     });
   });
+
+  function payoutPayload(eventId: string, type: string, payout: Record<string, unknown>): string {
+    return JSON.stringify({
+      id: eventId,
+      object: 'event',
+      api_version: '2025-01-01',
+      created: 1_760_000_000,
+      livemode: false,
+      pending_webhooks: 0,
+      request: { id: null, idempotency_key: null },
+      type,
+      account: ACCOUNT_ID,
+      data: {
+        object: {
+          object: 'payout',
+          amount: 4_500,
+          currency: 'usd',
+          method: 'standard',
+          arrival_date: 1_760_100_000,
+          failure_message: null,
+          // Expanded so the handler takes no network trip for the fee.
+          balance_transaction: null,
+          ...payout,
+        },
+      },
+    });
+  }
 
   function intentPayload(eventId: string, type: string, intentId = INTENT_ID, extra = {}): string {
     return JSON.stringify({
@@ -464,6 +506,180 @@ describe.skipIf(!reachable)('payment_intent events', () => {
 
     const payment = await prisma.payment.findUnique({ where: { id: PAYMENT_ID } });
     expect(payment?.stripeFeeCents).toBe(100);
+  });
+
+  /**
+   * The case that only exists because Stripe acts on its own.
+   *
+   * Nothing here creates the daily automatic payout — Stripe does, on its schedule — so
+   * the webhook is the only route by which it can ever appear in a barber's history. If
+   * this stopped working, the history would silently narrow to the instant payouts
+   * somebody pressed a button for, and look complete while doing it.
+   */
+  it('creates a payout nobody here asked for', async () => {
+    const payload = payoutPayload(`${EVENT_PREFIX}auto`, 'payout.paid', {
+      id: 'po_whtest_auto',
+      status: 'paid',
+      method: 'standard',
+      balance_transaction: { id: 'txn_po_1', object: 'balance_transaction', fee: 0, net: 4500 },
+    });
+
+    await post(payload, sign(payload)).expect(200);
+
+    const payout = await prisma.payout.findUnique({ where: { stripePayoutId: 'po_whtest_auto' } });
+    expect(payout?.barberId).toBe(barberId);
+    expect(payout?.type).toBe('STANDARD_AUTO');
+    expect(payout?.status).toBe('PAID');
+    expect(payout?.amountCents).toBe(4_500);
+    // The daily payout is free, and Stripe reports it as such.
+    expect(payout?.feeCents).toBe(0);
+  });
+
+  it('is idempotent when the same payout event is delivered twice', async () => {
+    const payload = payoutPayload(`${EVENT_PREFIX}autodupe`, 'payout.paid', {
+      id: 'po_whtest_dupe',
+      status: 'paid',
+    });
+    const signature = sign(payload);
+
+    await post(payload, signature).expect(200);
+    const second = await post(payload, signature).expect(200);
+
+    expect(second.body).toMatchObject({ duplicate: true });
+    expect(await prisma.payout.count({ where: { stripePayoutId: 'po_whtest_dupe' } })).toBe(1);
+  });
+
+  /**
+   * An instant payout already has a row, written when the barber asked for it, carrying
+   * our quote of the fee. The event moves it along and replaces the quote with what
+   * Stripe actually took — but must not relabel it, because a payout event carries no
+   * notion of who initiated it.
+   */
+  it('settles an instant payout without relabelling it', async () => {
+    await prisma.payout.create({
+      data: {
+        barberId,
+        stripePayoutId: 'po_whtest_instant',
+        amountCents: 10_000,
+        feeCents: 150,
+        currency: 'USD',
+        type: 'INSTANT',
+        status: 'PENDING',
+      },
+    });
+
+    const payload = payoutPayload(`${EVENT_PREFIX}instant`, 'payout.paid', {
+      id: 'po_whtest_instant',
+      status: 'paid',
+      method: 'instant',
+      amount: 10_000,
+      balance_transaction: { id: 'txn_po_2', object: 'balance_transaction', fee: 152, net: 9_848 },
+    });
+
+    await post(payload, sign(payload)).expect(200);
+
+    const payout = await prisma.payout.findUnique({
+      where: { stripePayoutId: 'po_whtest_instant' },
+    });
+    expect(payout?.type).toBe('INSTANT');
+    expect(payout?.status).toBe('PAID');
+    // Stripe's real figure, not the 150 we quoted.
+    expect(payout?.feeCents).toBe(152);
+    expect(await prisma.payout.count({ where: { barberId } })).toBe(1);
+  });
+
+  /**
+   * Test mode reports `fee: 0` on an instant payout because it does not charge the fee.
+   * Taking that at face value replaced the quote the barber agreed to with zero — so a
+   * reported zero is treated as "no figure", not as "free".
+   */
+  it('does not let a reported zero erase the quoted fee', async () => {
+    await prisma.payout.create({
+      data: {
+        barberId,
+        stripePayoutId: 'po_whtest_zero',
+        amountCents: 2_000,
+        feeCents: 50,
+        currency: 'USD',
+        type: 'INSTANT',
+        status: 'PENDING',
+      },
+    });
+
+    const payload = payoutPayload(`${EVENT_PREFIX}zerofee`, 'payout.paid', {
+      id: 'po_whtest_zero',
+      status: 'paid',
+      method: 'instant',
+      amount: 2_000,
+      balance_transaction: { id: 'txn_po_z', object: 'balance_transaction', fee: 0, net: -2_000 },
+    });
+
+    await post(payload, sign(payload)).expect(200);
+
+    const payout = await prisma.payout.findUnique({ where: { stripePayoutId: 'po_whtest_zero' } });
+    expect(payout?.feeCents).toBe(50);
+  });
+
+  /**
+   * Stripe sends several events per payout and more than one carries `paid`. Observed
+   * live: four events inside a second wrote four identical audit rows for one payout.
+   */
+  it('audits an arrival once, however many events say it arrived', async () => {
+    const paid = (suffix: string) =>
+      payoutPayload(`${EVENT_PREFIX}multi${suffix}`, 'payout.paid', {
+        id: 'po_whtest_multi',
+        status: 'paid',
+      });
+
+    for (const suffix of ['a', 'b', 'c']) {
+      const payload = paid(suffix);
+      await post(payload, sign(payload)).expect(200);
+    }
+
+    expect(
+      await prisma.auditLog.count({
+        where: { entityId: 'po_whtest_multi', action: 'payout.paid' },
+      }),
+    ).toBe(1);
+  });
+
+  it('records why a payout failed', async () => {
+    const payload = payoutPayload(`${EVENT_PREFIX}pofail`, 'payout.failed', {
+      id: 'po_whtest_failed',
+      status: 'failed',
+      failure_message: 'The bank account has been closed.',
+    });
+
+    await post(payload, sign(payload)).expect(200);
+
+    const payout = await prisma.payout.findUnique({
+      where: { stripePayoutId: 'po_whtest_failed' },
+    });
+    expect(payout?.status).toBe('FAILED');
+    expect(payout?.failureReason).toBe('The bank account has been closed.');
+
+    const audits = await prisma.auditLog.count({
+      where: { entityId: 'po_whtest_failed', action: 'payout.failed' },
+    });
+    expect(audits).toBe(1);
+  });
+
+  it('acknowledges a payout for an account it holds no barber for', async () => {
+    const payload = JSON.stringify({
+      id: `${EVENT_PREFIX}postranger`,
+      object: 'event',
+      api_version: '2025-01-01',
+      created: 1_760_000_000,
+      livemode: false,
+      pending_webhooks: 0,
+      request: { id: null, idempotency_key: null },
+      type: 'payout.paid',
+      account: 'acct_whtest_stranger',
+      data: { object: { id: 'po_stranger', object: 'payout', amount: 100, currency: 'usd', status: 'paid' } },
+    });
+
+    await post(payload, sign(payload)).expect(200);
+    expect(await prisma.payout.count({ where: { stripePayoutId: 'po_stranger' } })).toBe(0);
   });
 
   it('acknowledges an intent it holds no payment for', async () => {

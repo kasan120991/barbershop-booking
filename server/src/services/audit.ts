@@ -90,7 +90,19 @@ export type AuditAction =
    */
   | 'payment.checkout_started'
   | 'payment.voided'
-  | 'payment.failed';
+  | 'payment.failed'
+  /**
+   * Money leaving the barber's Stripe account for their bank.
+   *
+   * `payout.requested` has an actor — a barber decided to pay a fee to get their money
+   * today. The other two come from webhooks and have none, which is honest: whether a
+   * payout landed is Stripe's answer, not anybody's action. The automatic daily payout
+   * is deliberately not audited on creation; nobody did anything, and a row per chair
+   * per day would bury the ones somebody chose.
+   */
+  | 'payout.requested'
+  | 'payout.paid'
+  | 'payout.failed';
 
 export interface AuditInput {
   action: AuditAction;
