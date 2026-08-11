@@ -16,9 +16,11 @@ useHead({ title: 'Calendar — Francis Cutz' });
 
 const api = useApi();
 const catalog = useCatalog();
+const shop = useShopClock();
 const { notifyApiFailure } = useNotify();
 
 await catalog.refresh();
+await shop.ensureLoaded();
 
 const barberId = ref<string | null>(null);
 const serviceIds = ref<string[]>([]);
@@ -42,16 +44,13 @@ const totalDuration = computed(() =>
     .reduce((total, service) => total + service.durationMinutes, 0),
 );
 
-const shopTimezone = computed(() => catalog.settings.value?.timezone ?? 'America/New_York');
-
-/** Slots arrive as UTC instants and are rendered in the SHOP's zone, not the browser's. */
-function localTime(iso: string): string {
-  return new Intl.DateTimeFormat('en-US', {
-    hour: 'numeric',
-    minute: '2-digit',
-    timeZone: shopTimezone.value,
-  }).format(new Date(iso));
-}
+/**
+ * Slots arrive as UTC instants and are rendered in the SHOP's zone, not the browser's.
+ * That helper used to live here and identically in `queue.vue`; it is `useShopClock`
+ * now, which is also what turns a date into the instants a range endpoint wants.
+ */
+const shopTimezone = shop.timezone;
+const localTime = shop.clock;
 
 async function load() {
   if (!barberId.value || serviceIds.value.length === 0 || !date.value) return;

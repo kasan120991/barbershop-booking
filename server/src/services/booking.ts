@@ -241,6 +241,28 @@ export function getAppointment(appointmentId: string) {
 }
 
 /**
+ * Whose chair an appointment belongs to, for the self-or-admin check.
+ *
+ * The mirror of `getPaymentOwner`, and it exists for the same reason: the routes that
+ * cancel an appointment or move its status name the *appointment*, so a middleware
+ * taking a synchronous getter cannot know the barber. They load the owner and call
+ * `assertBarberSelfOrAdmin` with it.
+ *
+ * Selects the one column rather than reusing `getAppointment`, so an authorisation
+ * check never pulls a client row — including their name and phone — into a request
+ * that may be about to be refused.
+ */
+export async function getAppointmentOwner(appointmentId: string): Promise<string> {
+  const appointment = await prisma.appointment.findUnique({
+    where: { id: appointmentId },
+    select: { barberId: true },
+  });
+
+  if (!appointment) throw new NotFoundError('That appointment does not exist.');
+  return appointment.barberId;
+}
+
+/**
  * Looks an appointment up by its cancel token.
  *
  * The token is the credential — it is 25 characters of cuid, never guessable by walking

@@ -26,7 +26,11 @@ import { limiter } from '../lib/rate-limit.js';
 import { pathParam } from '../lib/http.js';
 import { prisma } from '../lib/prisma.js';
 import { toAppointmentDto, toBookingConfirmationDto } from '../mappers/appointment.js';
-import { requireRole, requireUser } from '../middleware/require-auth.js';
+import {
+  assertBarberSelfOrAdmin,
+  requireRole,
+  requireUser,
+} from '../middleware/require-auth.js';
 import { auditContext, recordAudit } from '../services/audit.js';
 import { getAvailability } from '../services/availability.js';
 import {
@@ -35,6 +39,7 @@ import {
   createAppointment,
   getAppointment,
   getAppointmentByToken,
+  getAppointmentOwner,
   listAppointments,
   updateAppointmentStatus,
 } from '../services/booking.js';
@@ -176,9 +181,20 @@ bookingRouter.get('/appointments', requireUser, async (req, res) => {
   res.json({ appointments: appointments.map(toAppointmentDto) });
 });
 
+/**
+ * Staff cancellation.
+ *
+ * `requireUser` alone was not enough: it proved somebody was signed in and nothing about
+ * whose book they were reaching into, so any barber could cancel any other barber's
+ * appointment by id. The read above it has always scoped a barber to their own book —
+ * this half was missed. Same rule, both directions now.
+ */
 bookingRouter.post('/appointments/:appointmentId/cancel', requireUser, async (req, res) => {
   const appointmentId = pathParam(req, 'appointmentId');
   const { reason } = cancelAppointmentRequestSchema.parse(req.body ?? {});
+
+  // Whose chair this is, before deciding whether the caller may touch it.
+  assertBarberSelfOrAdmin(req, await getAppointmentOwner(appointmentId));
 
   const before = await getAppointment(appointmentId);
   // Staff are not held to the notice window — they are standing in the shop.
@@ -198,9 +214,12 @@ bookingRouter.post('/appointments/:appointmentId/cancel', requireUser, async (re
   res.json({ appointment: toAppointmentDto(await requireLoaded(appointmentId)) });
 });
 
+/** Self-or-admin for the same reason as the cancel above. */
 bookingRouter.patch('/appointments/:appointmentId/status', requireUser, async (req, res) => {
   const appointmentId = pathParam(req, 'appointmentId');
   const { status } = updateAppointmentStatusRequestSchema.parse(req.body);
+
+  assertBarberSelfOrAdmin(req, await getAppointmentOwner(appointmentId));
 
   const before = await getAppointment(appointmentId);
   await updateAppointmentStatus(appointmentId, status as AppointmentStatus);

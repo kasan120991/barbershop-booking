@@ -53,9 +53,26 @@ const reachable = await prisma
 const PASSWORD_HASH = await hashPassword(PASSWORD);
 
 const TIMEZONE = 'America/New_York';
-/** 2026-08-11 is a Tuesday; 10:00 local is 14:00Z in August. */
-const SLOT = new Date('2026-08-11T14:00:00.000Z');
-const NOW = new Date('2026-08-01T12:00:00.000Z');
+/**
+ * A Tuesday at 10:00 in the shop's zone, always comfortably ahead of the real clock.
+ *
+ * These were two hardcoded instants, and that made the file a time bomb: the public
+ * booking path is the one thing here with no injectable clock — it checks `startAt`
+ * against the real `now` — so on the very day the constant named, four tests began
+ * failing at ten in the morning with nothing wrong with the code. Derived from `now`
+ * instead, and two weeks out so the minimum-notice window is never the reason.
+ *
+ * Tuesday because that is the weekday `reseed` gives the barber a schedule on; luxon
+ * counts weekdays from Monday, so Tuesday is 2. Well inside `bookingHorizonDays: 365`.
+ */
+const SLOT = DateTime.now()
+  .setZone(TIMEZONE)
+  .plus({ weeks: 2 })
+  .set({ weekday: 2, hour: 10, minute: 0, second: 0, millisecond: 0 })
+  .toJSDate();
+
+/** The injected clock for the staff path. Only has to sit before `SLOT`. */
+const NOW = DateTime.now().setZone(TIMEZONE).startOf('day').toJSDate();
 
 let barberId = '';
 let cutId = '';

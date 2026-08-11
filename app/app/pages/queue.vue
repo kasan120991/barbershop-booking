@@ -37,7 +37,8 @@ import {
 useHead({ title: 'Walk-in Queue — Francis Cutz' });
 
 const queue = useQueue();
-const { board, loading, barbers: roster, settings } = queue;
+const shop = useShopClock();
+const { board, loading, barbers: roster } = queue;
 const { notifyApiFailure, notifySuccess } = useNotify();
 const confirm = useConfirm();
 
@@ -58,20 +59,17 @@ const busy = reactive(new Set<string>());
 // no-op; the refresh on mount is what catches a client-side navigation arriving
 // between two of the shell's polls.
 await queue.ensureLoaded();
+await shop.ensureLoaded();
 void queue.loadOptions();
 onMounted(() => void queue.refresh({ quiet: true }));
 
-const shopTimezone = computed(() => settings.value?.timezone ?? 'America/New_York');
-
-/** Instants are rendered in the SHOP's zone, never the browser's. */
-function clock(iso: string | null): string {
-  if (iso === null) return '';
-  return new Intl.DateTimeFormat('en-US', {
-    hour: 'numeric',
-    minute: '2-digit',
-    timeZone: shopTimezone.value,
-  }).format(new Date(iso));
-}
+/**
+ * Instants are rendered in the SHOP's zone, never the browser's.
+ *
+ * This was a copy of the same helper in `calendar.vue`; `/my-day` would have made three,
+ * so it lives in `useShopClock` now.
+ */
+const clock = shop.clock;
 
 /** The instant every figure below is measured from. See the note at the top. */
 const asOf = computed(() =>
