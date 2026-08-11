@@ -323,6 +323,9 @@ async function onPayout(
   const reportedFee = fees === null ? undefined : Math.abs(fees.stripeFeeCents);
   const feeCents = reportedFee === undefined || reportedFee === 0 ? undefined : reportedFee;
 
+  const settled = status === PAYOUT_STATUS.PAID || status === PAYOUT_STATUS.FAILED;
+  let changed: boolean;
+
   if (existing === null) {
     await prisma.payout.create({
       data: {
@@ -338,29 +341,36 @@ async function onPayout(
         failureReason,
       },
     });
+    changed = true;
   } else {
+    // Details that may legitimately move on any event — an arrival estimate shifts, a fee
+    // finally lands. Unconditional, because none of them is a transition.
     await prisma.payout.update({
       where: { id: existing.id },
-      data: {
-        status,
-        arrivalDate,
-        failureReason,
-        ...(feeCents === undefined ? {} : { feeCents }),
-      },
+      data: { arrivalDate, failureReason, ...(feeCents === undefined ? {} : { feeCents }) },
     });
+
+    /**
+     * The status change itself is decided by the database, not by what we read a moment
+     * ago.
+     *
+     * Stripe sends several events per payout within the same second and more than one
+     * carries `paid`; Express handles them concurrently, so two handlers can both read
+     * `PENDING` before either writes and both then believe they made the transition.
+     * Observed live: three `payout.paid` audit rows for two payouts. Guarding the update
+     * on the old status makes exactly one of them win, whatever the interleaving.
+     */
+    const moved = await prisma.payout.updateMany({
+      where: { id: existing.id, status: { not: status } },
+      data: { status },
+    });
+    changed = moved.count > 0;
   }
 
   /**
-   * Audited on the transition, not on the state.
-   *
-   * Stripe sends several events per payout and more than one of them carries `paid` —
-   * observed live: two `payout.updated`, a `payout.paid` and a `payout.created`, all
-   * within a second, which wrote four identical audit rows for one $20 payout. The trail
-   * is meant to record that money arrived, once, not that four messages said so.
+   * Audited on the transition, not on the state — the trail is meant to record that money
+   * arrived, once, not that four messages said so.
    */
-  const settled = status === PAYOUT_STATUS.PAID || status === PAYOUT_STATUS.FAILED;
-  const changed = existing === null || existing.status !== status;
-
   if (settled && changed) {
     await recordAudit(
       { principal: undefined, ipAddress: null },

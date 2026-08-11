@@ -643,6 +643,47 @@ describe.skipIf(!reachable)('payment_intent events', () => {
     ).toBe(1);
   });
 
+  /**
+   * The same thing, but raced — which is how it actually arrives.
+   *
+   * Stripe delivers several events per payout inside one second and Express handles them
+   * concurrently, so two handlers can both read the old status before either writes. The
+   * sequential test above passed happily while this was broken; three audit rows for two
+   * payouts showed up only against the live sandbox. The transition is now a guarded
+   * `updateMany`, so the database picks the winner whatever the interleaving.
+   */
+  it('audits an arrival once even when the events land together', async () => {
+    await prisma.payout.create({
+      data: {
+        barberId,
+        stripePayoutId: 'po_whtest_race',
+        amountCents: 3_000,
+        feeCents: 50,
+        currency: 'USD',
+        type: 'INSTANT',
+        status: 'PENDING',
+      },
+    });
+
+    const deliveries = ['x', 'y', 'z'].map((suffix) => {
+      const payload = payoutPayload(`${EVENT_PREFIX}race${suffix}`, 'payout.paid', {
+        id: 'po_whtest_race',
+        status: 'paid',
+        amount: 3_000,
+      });
+      return post(payload, sign(payload));
+    });
+
+    const results = await Promise.all(deliveries);
+    for (const result of results) expect(result.status).toBe(200);
+
+    expect(
+      await prisma.auditLog.count({
+        where: { entityId: 'po_whtest_race', action: 'payout.paid' },
+      }),
+    ).toBe(1);
+  });
+
   it('records why a payout failed', async () => {
     const payload = payoutPayload(`${EVENT_PREFIX}pofail`, 'payout.failed', {
       id: 'po_whtest_failed',
