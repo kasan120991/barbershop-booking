@@ -1,11 +1,15 @@
 /**
  * The book — appointments for a range of days.
  *
- * `GET /appointments` is **already scoped to whoever is asking**: a barber-only account
- * cannot pass a `barberId` at all, because the route overwrites whatever it is sent with
- * their own (`server/src/routes/booking.ts:162-168`). So `/my-day` asks for a date range
- * and nothing else, and the server decides whose book that is. `appointments.test.ts`
- * pins that behaviour, because this composable's safety rests on it entirely.
+ * `GET /appointments` scopes a **barber** to their own book by construction: it overwrites
+ * whatever `barberId` they send with their own (`server/src/routes/booking.ts:162-168`),
+ * which `appointments.test.ts` pins. An **admin** is a different matter — they get every
+ * barber unless they ask for one, which is right for a shop-wide calendar and wrong for
+ * "My Day". The owner cuts hair too, so on that page an admin was quietly shown the whole
+ * shop's book beside their own chair's walk-ins.
+ *
+ * So `barberId` is a caller's choice here rather than something left to the server. A
+ * barber passing their own id is a no-op; an admin passing it is the whole point.
  *
  * Two things the endpoint does not do, both handled by the callers:
  *
@@ -39,12 +43,16 @@ export function useAppointments() {
   async function loadRange(
     from: string,
     to: string,
-    options: { quiet?: boolean } = {},
+    options: { quiet?: boolean; barberId?: string | null } = {},
   ): Promise<void> {
     if (!options.quiet) loading.value = true;
     try {
       const response = await api<{ appointments: AppointmentDto[] }>('/appointments', {
-        query: { from, to },
+        query: {
+          from,
+          to,
+          ...(options.barberId == null ? {} : { barberId: options.barberId }),
+        },
       });
       appointments.value = response.appointments;
     } catch (error) {

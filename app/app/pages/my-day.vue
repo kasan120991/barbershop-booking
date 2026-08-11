@@ -71,7 +71,10 @@ const range = computed(() =>
 async function load(): Promise<void> {
   if (barberId.value === null) return;
   try {
-    await book.loadRange(range.value.from, range.value.to);
+    // Always named, never left to the server. A BARBER would be scoped to themselves
+    // anyway, but the owner holds ADMIN too — and an admin who does not ask for a barber
+    // is given all of them, which on this page is every other chair's work.
+    await book.loadRange(range.value.from, range.value.to, { barberId: barberId.value });
   } catch (error) {
     notifyApiFailure(error, 'Could not load your book.');
   }
@@ -100,6 +103,8 @@ interface DayItem {
   notes: string | null;
   /** An appointment, or a walk-in the estimator has pencilled in. */
   projected: boolean;
+  /** True only while the estimate can still move — a waiting walk-in, not a seated one. */
+  moving: boolean;
   status: string;
   appointment: AppointmentDto | null;
 }
@@ -123,6 +128,7 @@ function fromAppointment(appointment: AppointmentDto): DayItem {
     source: sourceLabel(appointment.source),
     notes: appointment.notes,
     projected: false,
+    moving: false,
     status: appointment.status,
     appointment,
   };
@@ -141,6 +147,7 @@ function fromQueueEntry(entry: QueueEntryDto): DayItem {
     source: 'Walk-in',
     notes: entry.notes,
     projected: true,
+    moving: entry.status === 'WAITING',
     status: entry.status,
     appointment: null,
   };
@@ -399,7 +406,14 @@ function openMenu(event: Event, appointment: AppointmentDto) {
 // --- Row presentation ----------------------------------------------------------
 
 function stateOf(item: DayItem): { kind: string; label: string } | null {
-  if (item.projected) return { kind: 'proj', label: 'Projected' };
+  if (item.projected) {
+    // A walk-in stops being a projection the moment somebody acts on them. Once they
+    // are called, and certainly once they are in the chair, the time is a fact — saying
+    // "projected" about the person being cut reads as a bug.
+    if (item.status === 'IN_CHAIR') return { kind: 'live', label: 'In the chair' };
+    if (item.status === 'CALLED') return { kind: 'next', label: 'Called' };
+    return { kind: 'proj', label: 'Projected' };
+  }
   if (item.status === 'IN_PROGRESS') return { kind: 'live', label: 'In the chair' };
   if (item.status === 'COMPLETED') return { kind: '', label: 'Done' };
   if (item.status === 'CANCELLED') return { kind: 'bad', label: 'Cancelled' };
@@ -417,7 +431,8 @@ function stateOf(item: DayItem): { kind: string; label: string } | null {
 function rowClass(item: DayItem) {
   return {
     now: item.status === 'IN_PROGRESS' || (item.projected && item.status === 'IN_CHAIR'),
-    projected: item.projected,
+    // Dashed only while it can still move. Somebody in the chair is not a guess.
+    projected: item.moving,
     done: item.status === 'COMPLETED',
     void: item.status === 'CANCELLED' || item.status === 'NO_SHOW',
   };
@@ -546,7 +561,7 @@ function rowClass(item: DayItem) {
                   </span>
                   <!-- Only the projection needs a caption here; the duration already
                        sits under the service and does not want saying twice. -->
-                  <span v-if="row.item.projected" class="meta">moves as the board moves</span>
+                  <span v-if="row.item.moving" class="meta">moves as the board moves</span>
                 </span>
 
                 <span class="what">
