@@ -23,8 +23,28 @@ const envSchema = z.object({
 
   /** Staff app origin. Must be exact — it is used for the CORS allowlist and cookies. */
   APP_ORIGIN: z.url().default('http://localhost:3000'),
-  /** Public booking + kiosk origin. */
+  /**
+   * Public booking + kiosk origin.
+   *
+   * Also the origin every customer-facing link is BUILT from — the payment QR code most
+   * of all. It has to be an address the customer's own phone can reach, which `localhost`
+   * never is, so on a real shop network this is the machine's LAN address (or a public
+   * hostname) rather than loopback.
+   */
   BOOKING_ORIGIN: z.url().default('http://localhost:3001'),
+
+  /**
+   * Additional origins allowed to call the API, comma-separated.
+   *
+   * Separate from the two above rather than making them lists, because those answer
+   * "where do I send someone", which has exactly one answer. This answers "who may call
+   * me", which legitimately has several: the same app is reachable at `localhost:3001`
+   * from this machine and at `192.168.1.175:3001` from a tablet on the shop wifi, and
+   * both must pass CORS while only one can appear in a link.
+   *
+   * Still an exact allowlist — every entry is written down. No wildcards, no regex.
+   */
+  EXTRA_ORIGINS: z.string().optional(),
 
   /**
    * Staff sessions are absolute, not sliding: 12 hours covers a shift, and a device
@@ -127,5 +147,21 @@ export const isProduction = env.NODE_ENV === 'production';
 export const isTest = env.NODE_ENV === 'test';
 export const isDevelopment = env.NODE_ENV === 'development';
 
-/** Origins allowed to send credentialed requests to this API. */
-export const allowedOrigins: readonly string[] = [env.APP_ORIGIN, env.BOOKING_ORIGIN];
+/**
+ * Origins allowed to send credentialed requests to this API.
+ *
+ * The two canonical origins plus anything in `EXTRA_ORIGINS`, deduplicated. Blank entries
+ * are dropped so a trailing comma cannot put `''` in the list — `cors` treats an empty
+ * string as no-origin, which would quietly widen this rather than fail loudly.
+ */
+export const allowedOrigins: readonly string[] = [
+  ...new Set(
+    [
+      env.APP_ORIGIN,
+      env.BOOKING_ORIGIN,
+      ...(env.EXTRA_ORIGINS?.split(',') ?? []),
+    ]
+      .map((origin) => origin.trim())
+      .filter((origin) => origin.length > 0),
+  ),
+];
