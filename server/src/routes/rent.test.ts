@@ -241,4 +241,85 @@ describe.skipIf(!reachable)('rent access', () => {
     expect(response.body.charges.length).toBeGreaterThan(0);
     expect(response.body.summary.outstandingCents).toBeGreaterThan(0);
   });
+  /**
+   * The counter's endpoint: a sum against the chair, not against a week.
+   *
+   * Admin-only for the same reason every other write is — a barber saying they paid is not
+   * evidence the shop received it.
+   */
+  it('refuses a barber allocating a payment to their own chair', async () => {
+    const session = await signIn(ANA_EMAIL);
+
+    await request(server)
+      .post(`/api/barbers/${anaId}/rent-payments`)
+      .set('Cookie', session.cookies)
+      .set(CSRF_HEADER, session.csrfToken)
+      .send({ amountCents: 25_000, method: 'CASH' })
+      .expect(403);
+  });
+
+  it('spreads an admin payment across the weeks it settles', async () => {
+    const admin = await signIn(ADMIN_EMAIL);
+
+    // A plan starting four Mondays back, brought up to date by the read below it.
+    await request(server)
+      .put(`/api/barbers/${anaId}/rent-plan`)
+      .set('Cookie', admin.cookies)
+      .set(CSRF_HEADER, admin.csrfToken)
+      .send(PLAN)
+      .expect(201);
+
+    const before = await request(server)
+      .get(`/api/barbers/${anaId}/rent`)
+      .set('Cookie', admin.cookies)
+      .expect(200);
+
+    const outstanding = before.body.summary.outstandingCents as number;
+    // Enough to clear two weeks and start a third, whatever today happens to be.
+    const paid = Math.min(outstanding, 60_000);
+
+    const response = await request(server)
+      .post(`/api/barbers/${anaId}/rent-payments`)
+      .set('Cookie', admin.cookies)
+      .set(CSRF_HEADER, admin.csrfToken)
+      .send({ amountCents: paid, method: 'CASH' })
+      .expect(201);
+
+    const allocated = response.body.allocated as { amountCents: number }[];
+    expect(allocated.length).toBeGreaterThan(1);
+    expect(allocated.reduce((total, slice) => total + slice.amountCents, 0)).toBe(paid);
+
+    const after = await request(server)
+      .get(`/api/barbers/${anaId}/rent`)
+      .set('Cookie', admin.cookies)
+      .expect(200);
+
+    expect(after.body.summary.outstandingCents).toBe(outstanding - paid);
+  });
+
+  /** Overpaying is refused with the figure that would have worked, not silently absorbed. */
+  it('refuses more than the chair owes', async () => {
+    const admin = await signIn(ADMIN_EMAIL);
+
+    await request(server)
+      .post(`/api/barbers/${anaId}/rent-charges`)
+      .set('Cookie', admin.cookies)
+      .set(CSRF_HEADER, admin.csrfToken)
+      .send({
+        amountCents: 25_000,
+        periodStart: '2026-08-03',
+        periodEnd: '2026-08-09',
+        dueDate: '2026-08-03',
+      })
+      .expect(201);
+
+    const response = await request(server)
+      .post(`/api/barbers/${anaId}/rent-payments`)
+      .set('Cookie', admin.cookies)
+      .set(CSRF_HEADER, admin.csrfToken)
+      .send({ amountCents: 30_000, method: 'CASH' })
+      .expect(409);
+
+    expect(response.body.error.message).toContain('250.00');
+  });
 });

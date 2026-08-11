@@ -351,6 +351,110 @@ export async function recordRentPayment(
   return updated;
 }
 
+export interface AllocateRentPaymentInput {
+  amountCents: number;
+  method: RentPaymentMethod;
+  paidAt?: string | null | undefined;
+  note?: string | null | undefined;
+  recordedByUserId: string;
+}
+
+export interface AllocatedRentPayment {
+  chargeId: string;
+  periodStart: string;
+  amountCents: number;
+  statusAfter: RentChargeStatus;
+}
+
+/**
+ * One sum of money, spread across the weeks it settles — oldest first.
+ *
+ * This is how rent is actually handed over. Nobody says "here is cash for the week of the
+ * fifth of January"; they hand over what they can and the shop works out what it clears.
+ * Attaching a payment to exactly one charge, which is what `recordRentPayment` does, makes
+ * the person at the counter do that arithmetic in their head.
+ *
+ * Oldest first, by due date, because that is what clearing a debt means — and it is the only
+ * order that does not need explaining to the person who paid.
+ *
+ * Each slice is its own `RentPayment` row rather than one row split by some later reader. A
+ * charge's payments then always sum to what was received against it, which is the property
+ * `recomputeChargeStatus` depends on and the one a disagreement is settled with.
+ */
+export async function allocateRentPayment(
+  barberId: string,
+  input: AllocateRentPaymentInput,
+): Promise<AllocatedRentPayment[]> {
+  if (!Number.isInteger(input.amountCents) || input.amountCents <= 0) {
+    throw new ValidationError('Enter how much was paid.');
+  }
+
+  const charges = await prisma.rentCharge.findMany({
+    where: { barberId, status: { in: [RENT_CHARGE_STATUS.DUE, RENT_CHARGE_STATUS.PARTIAL] } },
+    orderBy: [{ dueDate: 'asc' }, { periodStart: 'asc' }],
+    include: { payments: { select: { amountCents: true } } },
+  });
+
+  const owing = charges
+    .map((charge) => ({
+      charge,
+      outstanding: charge.amountCents - sumCents(charge.payments.map((p) => p.amountCents)),
+    }))
+    .filter((entry) => entry.outstanding > 0);
+
+  const totalOutstanding = owing.reduce((total, entry) => total + entry.outstanding, 0);
+
+  if (totalOutstanding === 0) {
+    throw new ConflictError('This chair has nothing outstanding.');
+  }
+
+  /**
+   * More than is owed is refused rather than absorbed.
+   *
+   * There is nowhere honest to put a surplus: the schema has no notion of credit, and
+   * quietly overpaying the newest week would invent one that nothing else understands.
+   * Naming the maximum makes the fix obvious.
+   */
+  if (input.amountCents > totalOutstanding) {
+    throw new ConflictError(
+      `That is more than is outstanding. This chair owes ${(totalOutstanding / 100).toFixed(2)}.`,
+    );
+  }
+
+  const paidAt = input.paidAt == null ? new Date() : new Date(input.paidAt);
+  const allocated: AllocatedRentPayment[] = [];
+  let remaining = input.amountCents;
+
+  for (const entry of owing) {
+    if (remaining <= 0) break;
+
+    const slice = Math.min(remaining, entry.outstanding);
+    remaining -= slice;
+
+    await prisma.rentPayment.create({
+      data: {
+        rentChargeId: entry.charge.id,
+        amountCents: slice,
+        method: input.method,
+        paidAt,
+        note: input.note ?? null,
+        recordedByUserId: input.recordedByUserId,
+      },
+    });
+
+    const statusAfter = await recomputeChargeStatus(entry.charge.id);
+
+    allocated.push({
+      chargeId: entry.charge.id,
+      periodStart: toIso(entry.charge.periodStart),
+      amountCents: slice,
+      statusAfter,
+    });
+  }
+
+  return allocated;
+}
+
 /** Money owed that will not be collected. The reason is required — see the contract. */
 export async function waiveRentCharge(chargeId: string, note: string): Promise<RentChargeModel> {
   const charge = await prisma.rentCharge.findUnique({

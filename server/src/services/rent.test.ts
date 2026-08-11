@@ -13,6 +13,7 @@ import { prisma } from '../lib/prisma.js';
 import { hashPassword } from './passwords.js';
 import {
   addOneOffCharge,
+  allocateRentPayment,
   generateRentCharges,
   getRentForBarber,
   nextDueDateFor,
@@ -422,5 +423,183 @@ describe.skipIf(!reachable)('rent charges', () => {
     // $250 owed less the $50 paid; the waived week contributes nothing.
     expect(overview.summary.outstandingCents).toBe(20_000);
     expect(overview.summary.unpaidCount).toBe(1);
+  });
+});
+
+/**
+ * Allocation — one sum of money spread across the weeks it settles.
+ *
+ * The arithmetic is what matters: a payment that clears two weeks and leaves a third part
+ * paid must land as three facts, not one, or a ledger read afterwards cannot say which
+ * weeks are square. Every case here is a sum somebody could actually hand over.
+ */
+describe.skipIf(!reachable)('allocateRentPayment', () => {
+  beforeEach(seed);
+
+  /** Three weeks at $250, oldest first — the shape every other case is a variation of. */
+  async function threeWeeksOwed() {
+    for (const [start, end] of [
+      ['2026-08-03', '2026-08-09'],
+      ['2026-08-10', '2026-08-16'],
+      ['2026-08-17', '2026-08-23'],
+    ] as const) {
+      await addOneOffCharge(barberId, {
+        amountCents: 25_000,
+        periodStart: start,
+        periodEnd: end,
+        dueDate: start,
+      });
+    }
+  }
+
+  it('clears the oldest week first', async () => {
+    await threeWeeksOwed();
+
+    const allocated = await allocateRentPayment(barberId, {
+      amountCents: 25_000,
+      method: 'CASH',
+      recordedByUserId: staffUserId,
+    });
+
+    expect(allocated).toEqual([
+      expect.objectContaining({
+        periodStart: '2026-08-03',
+        amountCents: 25_000,
+        statusAfter: RENT_CHARGE_STATUS.PAID,
+      }),
+    ]);
+  });
+
+  /**
+   * The case the per-charge endpoint could not do, and the reason this exists: $600 handed
+   * over against three $250 weeks clears two and part-pays the third.
+   */
+  it('spans several weeks and part-pays the one it runs out on', async () => {
+    await threeWeeksOwed();
+
+    const allocated = await allocateRentPayment(barberId, {
+      amountCents: 60_000,
+      method: 'CASH',
+      recordedByUserId: staffUserId,
+    });
+
+    expect(allocated).toEqual([
+      expect.objectContaining({ periodStart: '2026-08-03', amountCents: 25_000 }),
+      expect.objectContaining({ periodStart: '2026-08-10', amountCents: 25_000 }),
+      expect.objectContaining({ periodStart: '2026-08-17', amountCents: 10_000 }),
+    ]);
+    expect(allocated.map((slice) => slice.statusAfter)).toEqual([
+      RENT_CHARGE_STATUS.PAID,
+      RENT_CHARGE_STATUS.PAID,
+      RENT_CHARGE_STATUS.PARTIAL,
+    ]);
+
+    const overview = await getRentForBarber(barberId);
+    expect(overview.summary.outstandingCents).toBe(15_000);
+    expect(overview.summary.unpaidCount).toBe(1);
+  });
+
+  /** Each slice is its own row, so a charge's payments still sum to what it received. */
+  it('writes one payment row per week it touched', async () => {
+    await threeWeeksOwed();
+    await allocateRentPayment(barberId, {
+      amountCents: 60_000,
+      method: 'ZELLE',
+      recordedByUserId: staffUserId,
+    });
+
+    const rows = await prisma.rentPayment.findMany({
+      where: { rentCharge: { barberId } },
+      select: { amountCents: true },
+    });
+    expect(rows).toHaveLength(3);
+    expect(rows.reduce((total, row) => total + row.amountCents, 0)).toBe(60_000);
+  });
+
+  /** It picks up where the last one stopped, rather than starting at the oldest week again. */
+  it('continues from a week that is already part paid', async () => {
+    await threeWeeksOwed();
+    await allocateRentPayment(barberId, {
+      amountCents: 30_000,
+      method: 'CASH',
+      recordedByUserId: staffUserId,
+    });
+
+    const second = await allocateRentPayment(barberId, {
+      amountCents: 30_000,
+      method: 'CASH',
+      recordedByUserId: staffUserId,
+    });
+
+    // The first left week two owing $200. The second clears that and starts on week three.
+    expect(second).toEqual([
+      expect.objectContaining({ periodStart: '2026-08-10', amountCents: 20_000 }),
+      expect.objectContaining({ periodStart: '2026-08-17', amountCents: 10_000 }),
+    ]);
+  });
+
+  /** Nowhere honest to keep a surplus, so it is refused with the number that would work. */
+  it('refuses more than is outstanding', async () => {
+    await threeWeeksOwed();
+
+    await expect(
+      allocateRentPayment(barberId, {
+        amountCents: 80_000,
+        method: 'CASH',
+        recordedByUserId: staffUserId,
+      }),
+    ).rejects.toThrow('750.00');
+
+    expect(await prisma.rentPayment.count({ where: { rentCharge: { barberId } } })).toBe(0);
+  });
+
+  it('refuses a payment when nothing is owed', async () => {
+    await expect(
+      allocateRentPayment(barberId, {
+        amountCents: 25_000,
+        method: 'CASH',
+        recordedByUserId: staffUserId,
+      }),
+    ).rejects.toThrow('nothing outstanding');
+  });
+
+  /** A waived week is not a debt, so money must skip past it rather than settle it. */
+  it('skips a waived week', async () => {
+    await threeWeeksOwed();
+    const charges = await prisma.rentCharge.findMany({
+      where: { barberId },
+      orderBy: { periodStart: 'asc' },
+    });
+    await waiveRentCharge(charges[0]!.id, 'First week on the house.');
+
+    const allocated = await allocateRentPayment(barberId, {
+      amountCents: 25_000,
+      method: 'CASH',
+      recordedByUserId: staffUserId,
+    });
+
+    expect(allocated).toEqual([
+      expect.objectContaining({ periodStart: '2026-08-10', amountCents: 25_000 }),
+    ]);
+  });
+
+  /** One chair's money never lands on another's ledger. */
+  it("never touches another chair's charges", async () => {
+    await threeWeeksOwed();
+    await addOneOffCharge(otherBarberId, {
+      amountCents: 25_000,
+      periodStart: '2026-07-27',
+      periodEnd: '2026-08-02',
+      dueDate: '2026-07-27',
+    });
+
+    await allocateRentPayment(barberId, {
+      amountCents: 25_000,
+      method: 'CASH',
+      recordedByUserId: staffUserId,
+    });
+
+    const theirs = await getRentForBarber(otherBarberId);
+    expect(theirs.summary.outstandingCents).toBe(25_000);
   });
 });

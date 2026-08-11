@@ -128,6 +128,7 @@ async function onSaveProfile() {
         <TabList>
           <Tab value="schedule">Schedule</Tab>
           <Tab value="timeoff">Time Off</Tab>
+          <Tab value="rent">Rent</Tab>
           <Tab value="profile">Profile</Tab>
         </TabList>
 
@@ -145,6 +146,14 @@ async function onSaveProfile() {
               :barber-id="barbers.selected.value.id"
               :exceptions="barbers.exceptions.value"
             />
+          </TabPanel>
+
+          <!--
+            Rent fetches its own data rather than arriving as a prop like the two above it.
+            A ledger is dozens of rows most roster clicks never open — see `useRent`.
+          -->
+          <TabPanel value="rent">
+            <BarbersRentPanel :barber-id="barbers.selected.value.id" />
           </TabPanel>
 
           <TabPanel value="profile">

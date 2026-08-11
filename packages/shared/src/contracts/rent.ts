@@ -137,6 +137,30 @@ export const recordRentPaymentRequestSchema = z.object({
 });
 export type RecordRentPaymentRequest = z.infer<typeof recordRentPaymentRequestSchema>;
 
+/**
+ * A payment against the chair rather than against one week.
+ *
+ * The server spreads it oldest-first across whatever is outstanding, which is how money is
+ * actually handed over — nobody says "this is for the week of the fifth". More than is owed
+ * is refused rather than held as credit; there is nowhere honest to keep a surplus.
+ */
+export const allocateRentPaymentRequestSchema = z.object({
+  amountCents: z.int().positive({ error: 'Enter how much was paid.' }),
+  method: rentPaymentMethodSchema,
+  paidAt: z.iso.datetime().nullish(),
+  note: z.string().trim().max(300).nullish(),
+});
+export type AllocateRentPaymentRequest = z.infer<typeof allocateRentPaymentRequestSchema>;
+
+/** What one handed-over sum actually settled, so the confirmation can say. */
+export const allocatedRentPaymentDtoSchema = z.object({
+  chargeId: z.string(),
+  periodStart: localDateSchema,
+  amountCents: z.int().nonnegative(),
+  statusAfter: rentChargeStatusSchema,
+});
+export type AllocatedRentPaymentDto = z.infer<typeof allocatedRentPaymentDtoSchema>;
+
 export const waiveRentChargeRequestSchema = z.object({
   /**
    * Required, unlike most notes. Waiving is the one action here that makes money owed stop

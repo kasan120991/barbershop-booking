@@ -12,10 +12,12 @@
 
 import {
   ROLE,
+  allocateRentPaymentRequestSchema,
   createRentChargeRequestSchema,
   recordRentPaymentRequestSchema,
   saveRentPlanRequestSchema,
   waiveRentChargeRequestSchema,
+  type AllocatedRentPaymentDto,
   type RentOverviewDto,
 } from '@francis/shared';
 import { Router } from 'express';
@@ -28,6 +30,7 @@ import { requireBarberSelfOrAdmin, requireRole } from '../middleware/require-aut
 import { auditContext, recordAudit } from '../services/audit.js';
 import {
   addOneOffCharge,
+  allocateRentPayment,
   getActiveRentPlan,
   getRentForBarber,
   recordRentPayment,
@@ -112,6 +115,47 @@ rentRouter.post('/barbers/:barberId/rent-charges', adminOnly, async (req, res) =
   });
 
   res.status(201).json({ id: charge.id });
+});
+
+/**
+ * A payment against the chair, spread oldest-first across what is owed.
+ *
+ * The one the counter actually uses: somebody hands over a sum, and this works out which
+ * weeks it clears. The per-charge route below still exists for correcting a specific week.
+ */
+rentRouter.post('/barbers/:barberId/rent-payments', adminOnly, async (req, res) => {
+  if (req.auth?.kind !== 'user') throw new UnauthenticatedError();
+
+  const barberId = pathParam(req, 'barberId');
+  const input = allocateRentPaymentRequestSchema.parse(req.body);
+
+  const allocated = await allocateRentPayment(barberId, {
+    amountCents: input.amountCents,
+    method: input.method as RentPaymentMethod,
+    paidAt: input.paidAt,
+    note: input.note,
+    recordedByUserId: req.auth.userId,
+  });
+
+  await recordAudit(auditContext(req), {
+    action: 'rent.payment_recorded',
+    entityType: 'Barber',
+    entityId: barberId,
+    after: {
+      amountCents: input.amountCents,
+      method: input.method,
+      // Which weeks it actually cleared — the whole point of allocating rather than
+      // attaching, and the thing anyone will ask about later.
+      allocatedTo: allocated.map((slice) => ({
+        periodStart: slice.periodStart,
+        amountCents: slice.amountCents,
+        statusAfter: slice.statusAfter,
+      })),
+    },
+  });
+
+  const body: AllocatedRentPaymentDto[] = allocated;
+  res.status(201).json({ allocated: body });
 });
 
 rentRouter.post('/rent-charges/:chargeId/payments', adminOnly, async (req, res) => {
