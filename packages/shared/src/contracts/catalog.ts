@@ -13,6 +13,7 @@
 import { z } from 'zod';
 
 import { BARBER_STATUS } from '../enums.js';
+import { formatDuration } from '../duration.js';
 import { LOCAL_DATE_PATTERN, MINUTES_IN_DAY } from '../time.js';
 
 /** A haircut is not an eight-hour job; the cap catches a stray extra digit. */
@@ -107,7 +108,7 @@ const priceCentsSchema = z
 const durationMinutesSchema = z
   .int({ error: 'Enter a duration in minutes.' })
   .positive({ error: 'A service must take at least a minute.' })
-  .max(MAX_SERVICE_MINUTES, { error: `Keep it under ${MAX_SERVICE_MINUTES} minutes.` });
+  .max(MAX_SERVICE_MINUTES, { error: `Keep it under ${formatDuration(MAX_SERVICE_MINUTES)}.` });
 
 export const createServiceRequestSchema = z.object({
   name: z.string().trim().min(1, { error: 'Give the service a name.' }).max(80),

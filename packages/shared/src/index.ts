@@ -7,6 +7,7 @@
  */
 
 export * from './contracts/index.js';
+export * from './duration.js';
 export * from './enums.js';
 export * from './events.js';
 export * from './money.js';

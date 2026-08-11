@@ -21,6 +21,7 @@ import ClockIcon from '@primeicons/vue/clock';
 import Sparkles from '@primeicons/vue/sparkles';
 import {
   formatCents,
+  formatDuration,
   formatPhone,
   normalizePhone,
   type BookingConfirmationDto,
@@ -387,7 +388,7 @@ const slotGroups = computed(() => {
                 <span v-if="service.description" class="desc">{{ service.description }}</span>
                 <span class="meta fcb-num">
                   <ClockIcon class="tiny" aria-hidden="true" />
-                  {{ service.durationMinutes }} min
+                  {{ formatDuration(service.durationMinutes) }}
                 </span>
               </span>
               <span class="price fcb-num">{{ formatCents(service.priceCents) }}</span>

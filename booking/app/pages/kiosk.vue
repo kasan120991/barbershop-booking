@@ -16,7 +16,12 @@
  * read everything they needed.
  */
 
-import { joinQueueRequestSchema, publicDisplayName } from '@francis/shared';
+import {
+  formatCents,
+  formatDuration,
+  joinQueueRequestSchema,
+  publicDisplayName,
+} from '@francis/shared';
 
 definePageMeta({ layout: 'kiosk' });
 
@@ -205,7 +210,7 @@ const myEntry = computed(
           </template>
           <template v-else>
             {{ waiting.length }} {{ waiting.length === 1 ? 'person' : 'people' }} waiting ·
-            longest about {{ longestWait }} min
+            longest about {{ formatDuration(longestWait) }}
           </template>
         </p>
       </div>
@@ -274,7 +279,7 @@ const myEntry = computed(
           "
         >
           <span class="o-name">{{ service.name }}</span>
-          <span class="o-meta fcb-num">{{ service.durationMinutes }} min</span>
+          <span class="o-meta fcb-num">{{ formatDuration(service.durationMinutes) }}</span>
         </button>
       </div>
       <p v-if="fieldErrors.serviceIds" class="err">{{ fieldErrors.serviceIds[0] }}</p>
@@ -354,7 +359,7 @@ const myEntry = computed(
 
     <div class="join-foot">
       <p v-if="totals.minutes" class="totals fcb-num">
-        {{ totals.minutes }} min · {{ (totals.cents / 100).toFixed(2) }} to pay after
+        {{ formatDuration(totals.minutes) }} · {{ formatCents(totals.cents) }} to pay after
       </p>
       <Button label="Join" size="large" :loading="joining" @click="onJoin" />
     </div>

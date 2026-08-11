@@ -21,6 +21,7 @@
  * the device model — narrow scope, no expiry, revocable by an admin.
  */
 
+import { formatDuration } from '@francis/shared';
 import { io, type Socket } from 'socket.io-client';
 import type {
   ClientToServerEvents,
@@ -157,7 +158,7 @@ export function useDeviceScreen() {
   function waitLabel(minutes: number | null): string {
     if (minutes === null) return 'Ask at the desk';
     if (minutes < 1) return 'You are up';
-    return `about ${String(minutes)} min`;
+    return `about ${formatDuration(minutes)}`;
   }
 
   /** Instants render in the SHOP's zone, on every screen in the system. */

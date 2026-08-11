@@ -13,7 +13,12 @@
  * only honest thing to do at that point is take the choice away again.
  */
 
-import { formatCents, joinQueueRequestSchema, type ServiceDto } from '@francis/shared';
+import {
+  formatCents,
+  formatDuration,
+  joinQueueRequestSchema,
+  type ServiceDto,
+} from '@francis/shared';
 
 const props = defineProps<{ visible: boolean }>();
 const emit = defineEmits<{ 'update:visible': [value: boolean] }>();
@@ -94,7 +99,7 @@ watch(
 );
 
 function priceLabel(service: ServiceDto): string {
-  return `${service.name} · ${String(service.durationMinutes)} min · ${formatCents(service.priceCents)}`;
+  return `${service.name} · ${formatDuration(service.durationMinutes)} · ${formatCents(service.priceCents)}`;
 }
 
 async function onAdd() {
@@ -197,7 +202,7 @@ async function onAdd() {
         />
         <p v-if="fieldErrors.serviceIds" class="err">{{ fieldErrors.serviceIds[0] }}</p>
         <p v-else-if="chosen.length" class="hint total">
-          {{ totalMinutes }} minutes · {{ formatCents(totalCents) }}
+          {{ formatDuration(totalMinutes) }} · {{ formatCents(totalCents) }}
         </p>
         <p v-else class="hint">Appointment-only services are not listed.</p>
       </div>

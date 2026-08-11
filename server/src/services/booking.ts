@@ -11,7 +11,7 @@
  * to write one.
  */
 
-import { normalizePhone, type AppointmentSource } from '@francis/shared';
+import { formatDuration, normalizePhone, type AppointmentSource } from '@francis/shared';
 import { DateTime } from 'luxon';
 
 import { logger } from '../lib/logger.js';
@@ -134,8 +134,10 @@ export async function createAppointment(input: CreateAppointmentInput) {
   if (input.enforceMinimumNotice) {
     const earliest = now.getTime() + settings.minimumNoticeMinutes * 60_000;
     if (startAt.getTime() < earliest) {
+      // "of notice", not "minutes' notice" — the possessive would render as
+      // "1 hour' notice" the moment the shop sets an hour or more.
       throw new ValidationError(
-        `Bookings need at least ${String(settings.minimumNoticeMinutes)} minutes' notice.`,
+        `Bookings need at least ${formatDuration(settings.minimumNoticeMinutes)} of notice.`,
       );
     }
   }

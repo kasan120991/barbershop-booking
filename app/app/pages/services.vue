@@ -10,6 +10,7 @@
 import {
   dayName,
   formatCents,
+  formatDuration,
   minutesToTimeString,
   nationalDigits,
   normalizePhone,
@@ -264,7 +265,7 @@ async function onDeleteClosure(closureId: string) {
 
               <Column header="Duration" style="width: 7rem">
                 <template #body="{ data }">
-                  <span class="num">{{ data.durationMinutes }} min</span>
+                  <span class="num">{{ formatDuration(data.durationMinutes) }}</span>
                 </template>
               </Column>
 

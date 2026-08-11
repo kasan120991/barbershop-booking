@@ -18,7 +18,7 @@ import Clock from '@primeicons/vue/clock';
 import Calendar from '@primeicons/vue/calendar';
 import User from '@primeicons/vue/user';
 
-import { formatCents, formatPhone } from '@francis/shared';
+import { formatCents, formatDuration, formatPhone } from '@francis/shared';
 
 const booking = useBooking();
 const route = useRoute();
@@ -114,7 +114,7 @@ const shopPhone = computed(() => booking.settings.value?.phone ?? null);
           </div>
           <p class="foot">
             <template v-if="booking.totalMinutes.value > 0">
-              <span class="fcb-num">{{ booking.totalMinutes.value }} minutes</span> ·
+              <span class="fcb-num">{{ formatDuration(booking.totalMinutes.value) }}</span> ·
             </template>
             Pay after your cut, in the shop.
           </p>

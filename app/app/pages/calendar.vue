@@ -10,7 +10,7 @@
  * is never a shrug — closed, fully booked, or too far ahead all read differently.
  */
 
-import type { AvailabilityResponse } from '@francis/shared';
+import { formatDuration, type AvailabilityResponse } from '@francis/shared';
 
 useHead({ title: 'Calendar — Francis Cutz' });
 
@@ -133,7 +133,7 @@ const dayLabel = computed(() => {
         <div>
           <h2>{{ dayLabel }}</h2>
           <p class="sub">
-            {{ totalDuration }} minutes
+            {{ formatDuration(totalDuration) }}
             <template v-if="result"> · {{ result.slots.length }} openings</template>
             · times shown in {{ shopTimezone }}
           </p>

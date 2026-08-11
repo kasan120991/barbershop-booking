@@ -20,7 +20,12 @@
  */
 
 import EllipsisIcon from '@primeicons/vue/ellipsis-v';
-import { formatCents, formatPhone, type QueueEntryDto } from '@francis/shared';
+import {
+  formatCents,
+  formatDuration,
+  formatPhone,
+  type QueueEntryDto,
+} from '@francis/shared';
 
 useHead({ title: 'Walk-in Queue — Francis Cutz' });
 
@@ -125,7 +130,7 @@ const summary = computed(() => {
     .map((entry) => entry.estimatedWaitMinutes)
     .filter((minutes): minutes is number => minutes !== null)
     .reduce((max, minutes) => Math.max(max, minutes), 0);
-  if (longest > 0) parts.push(`longest wait ${String(longest)} min`);
+  if (longest > 0) parts.push(`longest wait ${formatDuration(longest)}`);
 
   parts.push(`updated ${clock(board.value.generatedAt)}`);
   return parts.join(' · ');
@@ -144,7 +149,7 @@ function waitLabel(entry: QueueEntryDto): string {
   if (entry.estimatedWaitMinutes === null) return '';
   return entry.estimatedWaitMinutes < 1
     ? 'chair is open'
-    : `in ${String(entry.estimatedWaitMinutes)} min`;
+    : `in ${formatDuration(entry.estimatedWaitMinutes)}`;
 }
 
 async function act(key: string, action: () => Promise<void>, message?: string) {
@@ -331,7 +336,7 @@ function openMenu(event: Event, entry: QueueEntryDto) {
         <span class="cell">
           <span class="strong">{{ entry.services.map((service) => service.name).join(' + ') }}</span>
           <span class="meta">
-            {{ entry.durationMinutes }} min · {{ formatCents(entry.priceCentsTotal) }}
+            {{ formatDuration(entry.durationMinutes) }} · {{ formatCents(entry.priceCentsTotal) }}
           </span>
         </span>
 
