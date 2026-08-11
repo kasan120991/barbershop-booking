@@ -102,7 +102,22 @@ export type AuditAction =
    */
   | 'payout.requested'
   | 'payout.paid'
-  | 'payout.failed';
+  | 'payout.failed'
+  /**
+   * Booth rent — the money going the other way.
+   *
+   * Rent is settled offline, so unlike a card payment there is no second copy of the story
+   * anywhere. These rows are the only record that a chair was charged, that cash changed
+   * hands, and that somebody decided a debt would not be collected. `charge_waived` is the
+   * one worth having most: it is the only action here that makes money owed stop being owed.
+   *
+   * A charge raised by the plan is deliberately NOT audited. It is arithmetic, it happens on
+   * a schedule nobody triggers, and a row per chair per week would bury the three above.
+   */
+  | 'rent.plan_changed'
+  | 'rent.charge_created'
+  | 'rent.payment_recorded'
+  | 'rent.charge_waived';
 
 export interface AuditInput {
   action: AuditAction;
