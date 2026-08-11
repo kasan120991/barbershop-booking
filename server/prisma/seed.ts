@@ -237,21 +237,31 @@ async function seedStaff(serviceIds: string[]) {
       }),
     ]);
 
-    // Booth rent: $250/week, anchored to Monday.
-    const existingPlan = await prisma.rentPlan.findFirst({
-      where: { barberId: barber.id, isActive: true },
+    /**
+     * Booth rent: $250/week, anchored to Monday — and the ledger wiped back to nothing.
+     *
+     * The plan alone is not the state worth restoring. Charges and payments accumulate
+     * from using the app, so a dev database that has had rent recorded against it stays
+     * that way through a reseed, and "reseed it" stops meaning what it says.
+     *
+     * Clearing them is safe precisely because nothing here recreates them: charges are
+     * raised lazily on the next read of the chair's rent, so the plan below is enough to
+     * put every week back. Same reasoning as the queue and `ShopHours` — replace, do not
+     * add beside.
+     */
+    await prisma.rentPayment.deleteMany({ where: { rentCharge: { barberId: barber.id } } });
+    await prisma.rentCharge.deleteMany({ where: { barberId: barber.id } });
+    await prisma.rentPlan.deleteMany({ where: { barberId: barber.id } });
+
+    await prisma.rentPlan.create({
+      data: {
+        barberId: barber.id,
+        amountCents: 25_000,
+        cadence: 'WEEKLY',
+        anchorDay: 1,
+        startDate: new Date('2026-01-05T00:00:00.000Z'),
+      },
     });
-    if (!existingPlan) {
-      await prisma.rentPlan.create({
-        data: {
-          barberId: barber.id,
-          amountCents: 25_000,
-          cadence: 'WEEKLY',
-          anchorDay: 1,
-          startDate: new Date('2026-01-05T00:00:00.000Z'),
-        },
-      });
-    }
   }
 }
 
