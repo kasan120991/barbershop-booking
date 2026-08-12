@@ -325,7 +325,10 @@ const nextBooked = computed(() =>
 
     <template v-else>
       <!-- --- The chair ------------------------------------------------------ -->
-      <section class="fc-card chair" :class="{ live: state === 'serving' || justFinished }">
+      <section
+        class="fc-card chair"
+        :class="{ live: state === 'serving' || justFinished }"
+      >
         <template v-if="justFinished">
           <span class="fc-label">Just finished</span>
           <p class="who">{{ justFinished.name }}</p>
@@ -393,7 +396,7 @@ const nextBooked = computed(() =>
       </section>
 
       <!-- --- The lineup ----------------------------------------------------- -->
-      <section class="fc-card">
+      <section class="fc-card lineup">
         <span class="fc-label">Your lineup</span>
 
         <p v-if="ahead.length === 0" class="quiet">
@@ -433,7 +436,7 @@ const nextBooked = computed(() =>
       </section>
 
       <!-- --- The money ------------------------------------------------------ -->
-      <section class="fc-card">
+      <section class="fc-card money">
         <span class="fc-label">Today's takings</span>
         <p class="amount">{{ takings ? formatCents(takings.totalCents) : '—' }}</p>
         <span v-if="takings" class="svc">
@@ -463,10 +466,63 @@ const nextBooked = computed(() =>
 
 <style scoped>
 .today {
-  display: flex;
-  flex-direction: column;
+  display: grid;
   gap: 0.875rem;
   max-width: 34rem;
+  grid-template-areas:
+    'chair'
+    'lineup'
+    'money'
+    'links';
+}
+
+.chair {
+  grid-area: chair;
+}
+
+.lineup {
+  grid-area: lineup;
+}
+
+.money {
+  grid-area: money;
+}
+
+.links {
+  grid-area: links;
+}
+
+.empty {
+  grid-column: 1 / -1;
+}
+
+/**
+ * Two columns once there is room for them.
+ *
+ * The phone layout is the design — chair, then what is next, then the money — and on a
+ * laptop it left a 540px ribbon against the left edge with half the window empty beside
+ * it. So above this width the day gets its own column and the chair keeps the one it is
+ * read from, which also stops the primary action stretching into a button nobody would
+ * design at that width.
+ *
+ * 60rem rather than a device: a tablet in portrait is read like a phone and keeps the
+ * single column; the same tablet turned landscape has the room for two.
+ */
+@media (min-width: 60rem) {
+  .today {
+    max-width: 66rem;
+    grid-template-columns: minmax(18rem, 23rem) minmax(0, 1fr);
+    grid-template-areas:
+      'chair  lineup'
+      'money  lineup'
+      'links  lineup';
+    align-content: start;
+  }
+
+  /* Sized by its own content, not stretched to whatever the left column adds up to. */
+  .lineup {
+    align-self: start;
+  }
 }
 
 .fc-label {
