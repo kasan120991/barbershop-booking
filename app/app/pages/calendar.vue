@@ -1,261 +1,286 @@
 <script setup lang="ts">
 /**
- * Calendar — a window onto the availability engine, and now a way to book through it.
+ * Calendar — the shop's day, one column per chair.
  *
- * The full calendar is Phase 9. This exists because the slot engine is the most
- * intricate logic in the system and "the tests pass" is a lot to take on trust: pick
- * a barber, a date and a service, and see exactly what a client would be offered.
+ * Admin-only, which is what makes the one un-scoped `loadRange` correct: an admin
+ * who does not name a barber is given every chair, and a board of columns is the
+ * one place that wants exactly that. A barber never reaches this page — the route
+ * guard bounces them to `/my-day`, whose request always names their own chair.
  *
- * It also surfaces the engine's own explanation when a day is empty, so "no slots"
- * is never a shrug — closed, fully booked, or too far ahead all read differently.
+ * The availability prober that lived here through the middle phases is gone —
+ * its two duties are covered better now. "Why is this day empty" is answered
+ * per column by `/working-hours` using the engine's own sentences, and booking
+ * goes through the dialog, which asks the same engine for its slots.
+ *
+ * Walk-ins appear as projections on today's board, dashed while they can still
+ * move — the same vocabulary as `/my-day`, from the same components.
  */
 
-import { formatDuration, type AvailabilityResponse } from '@francis/shared';
+import type { QueueEntryDto, WorkingHoursResponse } from '@francis/shared';
 
 useHead({ title: 'Calendar — Francis Cutz' });
 
-const api = useApi();
+const book = useAppointments();
+const queue = useQueue();
 const catalog = useCatalog();
 const shop = useShopClock();
+const columnsApi = useCalendarColumns();
+const workingHoursApi = useWorkingHours();
 const { notifyApiFailure } = useNotify();
 
 await catalog.refresh();
 await shop.ensureLoaded();
 
-const barberId = ref<string | null>(null);
-const serviceIds = ref<string[]>([]);
-const date = ref('');
-const result = ref<AvailabilityResponse | null>(null);
+const cursor = ref(shop.today());
 const bookingOpen = ref(false);
-const loading = ref(false);
+const showVoids = ref(false);
 
-/** Defaults that show something useful immediately rather than an empty form. */
-onMounted(() => {
-  barberId.value ??= catalog.barbers.value[0]?.id ?? null;
-  const firstBookable = catalog.services.value.find((service) => service.isActive);
-  if (serviceIds.value.length === 0 && firstBookable) serviceIds.value = [firstBookable.id];
-  if (!date.value) date.value = new Date().toISOString().slice(0, 10);
-});
+const range = computed(() => shop.dayRange(cursor.value));
 
-const activeServices = computed(() => catalog.services.value.filter((service) => service.isActive));
-
-const totalDuration = computed(() =>
-  activeServices.value
-    .filter((service) => serviceIds.value.includes(service.id))
-    .reduce((total, service) => total + service.durationMinutes, 0),
-);
-
-/**
- * Slots arrive as UTC instants and are rendered in the SHOP's zone, not the browser's.
- * That helper used to live here and identically in `queue.vue`; it is `useShopClock`
- * now, which is also what turns a date into the instants a range endpoint wants.
- */
-const shopTimezone = shop.timezone;
-const localTime = shop.clock;
-
-async function load() {
-  if (!barberId.value || serviceIds.value.length === 0 || !date.value) return;
-
-  loading.value = true;
+async function load(quiet = false): Promise<void> {
   try {
-    result.value = await api<AvailabilityResponse>('/availability', {
-      query: {
-        barberId: barberId.value,
-        date: date.value,
-        serviceIds: serviceIds.value.join(','),
-      },
-    });
+    // No barberId on purpose — see the header note.
+    await book.loadRange(range.value.from, range.value.to, { quiet });
   } catch (error) {
-    result.value = null;
-    notifyApiFailure(error);
-  } finally {
-    loading.value = false;
+    notifyApiFailure(error, "Could not load the day's book.");
   }
 }
 
-// Re-query whenever any input changes — the whole point is to poke at it.
-watch([barberId, serviceIds, date], load, { deep: true });
-onMounted(load);
+const workingDay = ref<WorkingHoursResponse | null>(null);
 
-const dayLabel = computed(() => {
-  if (!date.value) return '';
-  // Parsed as UTC then rendered in the shop zone would shift the day, so the parts
-  // are read directly from the string.
-  const [year, month, day] = date.value.split('-').map(Number);
-  if (!year || !month || !day) return '';
-  return new Intl.DateTimeFormat('en-US', {
-    weekday: 'long',
-    day: 'numeric',
-    month: 'long',
-    timeZone: 'UTC',
-  }).format(new Date(Date.UTC(year, month - 1, day)));
+/** Shading and the empty-column sentences; the board survives without them. */
+async function loadWorkingDay(): Promise<void> {
+  try {
+    workingDay.value = await workingHoursApi.loadWorkingHours(cursor.value, 1);
+  } catch {
+    workingDay.value = null;
+  }
+}
+
+await Promise.all([load(), loadWorkingDay()]);
+watch(cursor, () => {
+  void load();
+  void loadWorkingDay();
 });
+
+// The queue board is already live in shared state and polled by the shell.
+onMounted(() => void queue.refresh({ quiet: true }));
+
+/**
+ * A quiet minute poll underneath, gated like `useQueue.poll`: appointments have
+ * no socket events yet, and another admin's booking must not need a reload to
+ * appear on the board.
+ */
+let timer: ReturnType<typeof setInterval> | undefined;
+const tick = () => {
+  if (document.visibilityState === 'visible') {
+    void load(true);
+    void loadWorkingDay();
+  }
+};
+onMounted(() => {
+  timer = setInterval(tick, 60_000);
+  document.addEventListener('visibilitychange', tick);
+});
+onUnmounted(() => {
+  if (timer !== undefined) clearInterval(timer);
+  document.removeEventListener('visibilitychange', tick);
+});
+
+const isToday = computed(() => cursor.value === shop.today());
+
+/** The roster: staff `/barbers` includes retired chairs, the board does not. */
+const chairs = computed(() =>
+  catalog.barbers.value.filter((barber) => barber.status === 'ACTIVE'),
+);
+
+const dayAppointments = computed(() =>
+  book.appointments.value.filter(
+    (appointment) => shop.localDate(appointment.startAt) === cursor.value,
+  ),
+);
+
+const voidsCount = computed(
+  () =>
+    dayAppointments.value.filter(
+      (appointment) => appointment.status === 'CANCELLED' || appointment.status === 'NO_SHOW',
+    ).length,
+);
+
+const columns = computed(() =>
+  chairs.value.map((barber) => {
+    const queueEntries: QueueEntryDto[] = isToday.value
+      ? (queue.board.value?.entries ?? []).filter(
+          (entry) =>
+            entry.assignedBarberId === barber.id &&
+            entry.estimatedReadyAt !== null &&
+            ['WAITING', 'CALLED', 'IN_CHAIR'].includes(entry.status),
+        )
+      : [];
+
+    return columnsApi.buildColumn({
+      key: barber.id,
+      today: isToday.value,
+      appointments: dayAppointments.value.filter(
+        (appointment) => appointment.barberId === barber.id,
+      ),
+      queueEntries,
+      workingDay:
+        workingDay.value?.days[0]?.barbers.find((row) => row.barberId === barber.id) ?? null,
+      showVoids: showVoids.value,
+    });
+  }),
+);
+
+const extent = computed(() => columnsApi.gridExtent(columns.value));
+
+const chairNames = computed(
+  () => new Map(chairs.value.map((barber) => [barber.id, barber.displayName])),
+);
+
+/** The server's clock, borrowed from the queue board — never the browser's. */
+const nowMinute = computed(() => {
+  const generatedAt = queue.board.value?.generatedAt;
+  return generatedAt === undefined ? null : shop.minuteOfDay(generatedAt);
+});
+
+// --- Moving about -------------------------------------------------------------
+
+const dayLabel = computed(() => shop.longDate(cursor.value));
+
+const relative = computed(() => {
+  if (cursor.value === shop.today()) return 'Today';
+  if (cursor.value === shop.addDays(shop.today(), 1)) return 'Tomorrow';
+  if (cursor.value === shop.addDays(shop.today(), -1)) return 'Yesterday';
+  return null;
+});
+
+function step(days: number) {
+  cursor.value = shop.addDays(cursor.value, days);
+}
+
+function goToday() {
+  cursor.value = shop.today();
+}
 </script>
 
 <template>
-  <div class="calendar">
-    <section class="controls">
-      <div class="field">
-        <label for="cal-barber" class="fc-label">Barber</label>
-        <Select
-          id="cal-barber"
-          v-model="barberId"
-          :options="catalog.barbers.value"
-          option-label="displayName"
-          option-value="id"
-          placeholder="Pick a barber"
-          fluid
-        />
-      </div>
-
-      <div class="field">
-        <label for="cal-date" class="fc-label">Date</label>
-        <input id="cal-date" v-model="date" type="date" class="fc-input">
-      </div>
-
-      <div class="field grow">
-        <label for="cal-services" class="fc-label">Services</label>
-        <MultiSelect
-          id="cal-services"
-          v-model="serviceIds"
-          :options="activeServices"
-          option-label="name"
-          option-value="id"
-          display="chip"
-          placeholder="Pick at least one"
-          fluid
-        />
-      </div>
-    </section>
-
-    <section class="results">
-      <header class="results-head">
-        <div>
-          <h2>{{ dayLabel }}</h2>
-          <p class="sub">
-            {{ formatDuration(totalDuration) }}
-            <template v-if="result"> · {{ result.slots.length }} openings</template>
-            · times shown in {{ shopTimezone }}
-          </p>
-        </div>
-        <span class="head-right">
-          <ProgressSpinner v-if="loading" style="width: 1.25rem; height: 1.25rem" :stroke-width="6" />
-          <Button label="Add Appointment" size="small" @click="bookingOpen = true" />
+  <div class="calboard">
+    <header class="toolbar">
+      <div class="datebar">
+        <Button variant="text" severity="secondary" aria-label="Previous day" @click="step(-1)">
+          ‹
+        </Button>
+        <span class="d">
+          {{ dayLabel }}
+          <span v-if="relative" class="rel">· {{ relative }}</span>
         </span>
-      </header>
-
-      <div v-if="result && result.slots.length" class="slots">
-        <span v-for="slot in result.slots" :key="slot" class="slot">{{ localTime(slot) }}</span>
+        <Button variant="text" severity="secondary" aria-label="Next day" @click="step(1)">
+          ›
+        </Button>
+        <Button
+          label="Today"
+          variant="outlined"
+          severity="secondary"
+          size="small"
+          :disabled="isToday"
+          @click="goToday"
+        />
       </div>
 
-      <!-- The engine explains itself: closed, booked out, or beyond the horizon each
-           read differently, which is what makes this reviewable rather than opaque. -->
-      <Message v-else-if="result" severity="secondary" :closable="false">
-        {{ result.reason ?? 'Nothing available.' }}
-      </Message>
+      <div class="views">
+        <!-- Counted and folded, not dropped — same rule as the agenda. -->
+        <button v-if="voidsCount > 0" type="button" class="linkish" @click="showVoids = !showVoids">
+          {{ showVoids ? 'Hide' : 'Show' }} {{ voidsCount }} cancelled and no-show
+        </button>
+        <Button label="Add Appointment" size="small" @click="bookingOpen = true" />
+      </div>
+    </header>
 
-      <p v-else class="sub">Pick a barber, a date and at least one service.</p>
-    </section>
+    <CalendarTimeGrid
+      :columns="columns"
+      :start-minute="extent.startMinute"
+      :end-minute="extent.endMinute"
+      :now-minute="nowMinute"
+    >
+      <template #head="{ column }">
+        <span class="chair">{{ chairNames.get(column.key) }}</span>
+      </template>
+    </CalendarTimeGrid>
 
-    <!-- The page was read-only for eight phases; this is the write half arriving. It
-         opens on whatever barber and date are already being inspected. -->
+    <!-- Opens on whatever date is on the board; the admin picks the chair inside. -->
     <AppointmentsAddAppointmentDialog
       v-model:visible="bookingOpen"
-      :date="date"
+      :date="cursor"
       @booked="load()"
     />
-
-    <p class="footnote">
-      The slot list is still read-only; booking goes through the dialog, which asks the same engine. Availability
-      already accounts for shop hours, closures, this barber's shifts and time off, existing
-      appointments, the turnaround buffer, and the minimum notice window.
-    </p>
   </div>
 </template>
 
 <style scoped>
-.calendar {
-  display: flex;
-  flex-direction: column;
-  gap: 1.25rem;
-  max-width: 60rem;
-}
-
-.controls {
-  display: flex;
-  gap: 1rem;
-  flex-wrap: wrap;
-  align-items: flex-end;
-}
-
-.field {
-  display: flex;
-  flex-direction: column;
-  min-width: 12rem;
-}
-
-.field.grow {
-  flex: 1;
-  min-width: 16rem;
-}
-
-.results {
+.calboard {
   display: flex;
   flex-direction: column;
   gap: 0.875rem;
-  border: 1px solid var(--fc-line);
-  border-radius: 8px;
-  background: var(--fc-surface);
-  padding: 1.25rem;
+  max-width: 78rem;
 }
 
-.head-right {
+.toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  flex-wrap: wrap;
+}
+
+.datebar {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.datebar .d {
+  font-family: var(--fc-font-display);
+  font-size: 1.05rem;
+  font-weight: 650;
+  white-space: nowrap;
+}
+
+.datebar .rel {
+  color: var(--fc-ink-faint);
+  font-weight: 500;
+  font-size: 0.85rem;
+}
+
+.views {
   display: flex;
   align-items: center;
   gap: 0.75rem;
 }
 
-.results-head {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 1rem;
-}
-
-.results-head h2 {
-  margin: 0;
-  font-family: var(--fc-font-display);
-  font-size: 1rem;
-  font-weight: 650;
-}
-
-.sub {
-  margin: 0.125rem 0 0;
+.linkish {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  color: var(--fc-accent);
+  font: inherit;
   font-size: 0.75rem;
-  color: var(--fc-ink-faint);
-  font-variant-numeric: tabular-nums;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+  padding: 0.2rem 0;
 }
 
-.slots {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.375rem;
+.linkish:focus-visible {
+  outline: 2px solid var(--fc-accent);
+  outline-offset: 1px;
 }
 
-.slot {
-  border: 1px solid var(--fc-line);
-  background: var(--fc-input);
-  border-radius: 5px;
-  padding: 0.375rem 0.625rem;
+.chair {
   font-size: 0.8125rem;
-  font-variant-numeric: tabular-nums;
-  color: var(--fc-ink-muted);
-}
-
-.footnote {
-  margin: 0;
-  font-size: 0.75rem;
-  color: var(--fc-ink-faint);
-  max-width: 62ch;
+  font-weight: 640;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 </style>
