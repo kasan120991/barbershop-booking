@@ -76,6 +76,7 @@ export function useDeviceScreen() {
 
   let socket: DeviceSocket | null = null;
   let tick: ReturnType<typeof setInterval> | undefined;
+  let poll: ReturnType<typeof setInterval> | undefined;
 
   const paired = computed(() => token.value !== null);
   const timezone = computed(() => settings.value?.timezone ?? 'America/New_York');
@@ -280,6 +281,27 @@ export function useDeviceScreen() {
       tick = setInterval(() => {
         now.value = Date.now();
       }, 15_000);
+
+      /**
+       * The backstop under the socket, at a minute — the same one the staff app runs.
+       *
+       * NOT for a link that drops loudly: Socket.IO reconnects by itself, and the server
+       * sends the current board on connect, so that case is already covered. This is for
+       * one that dies quietly while reporting itself healthy, where a frozen board looks
+       * exactly like a quiet morning. It matters more on these two screens than anywhere
+       * else in the system, because the figure beside it now counts down against the
+       * clock: a stalled board no longer sits still and looks stale, it keeps confidently
+       * walking towards "No wait" while nothing behind it is true.
+       *
+       * Unconditional, deliberately. Gating it on `connected` would skip the exact
+       * failure it exists for — the socket that believes it is fine.
+       *
+       * Cheap, too: `loadBoard` returns early without a token, and a 401 sends a revoked
+       * screen back to pairing even when the socket is the thing that died.
+       */
+      poll = setInterval(() => {
+        void loadBoard();
+      }, 60_000);
     });
 
     onUnmounted(() => {
@@ -288,6 +310,8 @@ export function useDeviceScreen() {
       connected.value = false;
       if (tick !== undefined) clearInterval(tick);
       tick = undefined;
+      if (poll !== undefined) clearInterval(poll);
+      poll = undefined;
     });
   }
 
