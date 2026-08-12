@@ -7,7 +7,12 @@
 
 import { describe, expect, it } from 'vitest';
 
-import { computeAvailability, type AvailabilityInput } from './availability.js';
+import {
+  computeAvailability,
+  computeScheduledIntervals,
+  type AvailabilityInput,
+  type ScheduledTimeInput,
+} from './availability.js';
 
 const TZ = 'America/New_York';
 
@@ -276,6 +281,144 @@ describe('notice and horizon', () => {
     );
     expect(result.slots).toEqual([]);
     expect(result.reason).toMatch(/days ahead/i);
+  });
+});
+
+/**
+ * The schedule half on its own — what the staff calendar reads to shade
+ * non-working time. No horizon, no busy subtraction: a calendar looks months
+ * ahead and at fully booked days, and must still see the working stretches.
+ */
+describe('computeScheduledIntervals', () => {
+  function makeScheduledInput(overrides: Partial<ScheduledTimeInput> = {}): ScheduledTimeInput {
+    return {
+      date: TUESDAY,
+      timezone: TZ,
+      barberSchedules: SPLIT_SHIFT,
+      shopHours: SHOP_HOURS,
+      shopClosures: [],
+      scheduleExceptions: [],
+      ...overrides,
+    };
+  }
+
+  it('returns a split shift as two intervals with the lunch gap between', () => {
+    const result = computeScheduledIntervals(makeScheduledInput());
+
+    expect(result.reason).toBeNull();
+    // 10:00–13:00 and 13:30–18:00 EDT on 2026-08-11.
+    expect(result.intervals.map((i) => [i.start.toISOString(), i.end.toISOString()])).toEqual([
+      ['2026-08-11T14:00:00.000Z', '2026-08-11T17:00:00.000Z'],
+      ['2026-08-11T17:30:00.000Z', '2026-08-11T22:00:00.000Z'],
+    ]);
+  });
+
+  it('has no booking horizon — a date months out still resolves', () => {
+    // 2026-12-15 is a Tuesday, far beyond the 30-day horizon that would empty the
+    // bookable version of this question. The calendar must still see the shifts.
+    const result = computeScheduledIntervals(makeScheduledInput({ date: '2026-12-15' }));
+    expect(result.reason).toBeNull();
+    expect(result.intervals).toHaveLength(2);
+    // EST by then: 10:00 local is 15:00Z.
+    expect(result.intervals[0]?.start.toISOString()).toBe('2026-12-15T15:00:00.000Z');
+  });
+
+  it('reports the shop closed on a day with no open hours', () => {
+    // 2026-08-10 is a Monday.
+    const result = computeScheduledIntervals(makeScheduledInput({ date: '2026-08-10' }));
+    expect(result.intervals).toEqual([]);
+    expect(result.reason).toBe('The shop is closed on this day.');
+  });
+
+  it('reports a closure date distinctly from a closed weekday', () => {
+    const result = computeScheduledIntervals(
+      makeScheduledInput({
+        shopClosures: [
+          { start: new Date('2026-08-11T04:00:00.000Z'), end: new Date('2026-08-12T04:00:00.000Z') },
+        ],
+      }),
+    );
+    expect(result.intervals).toEqual([]);
+    expect(result.reason).toBe('The shop is closed on this date.');
+  });
+
+  it('reports a barber with no shifts as not working', () => {
+    const result = computeScheduledIntervals(makeScheduledInput({ barberSchedules: [] }));
+    expect(result.intervals).toEqual([]);
+    expect(result.reason).toBe('This barber is not working on this day.');
+  });
+
+  it('reports all-day time off, and carves a mid-day block out of the shift', () => {
+    const dayOff = computeScheduledIntervals(
+      makeScheduledInput({
+        scheduleExceptions: [
+          {
+            type: 'TIME_OFF',
+            startAt: new Date('2026-08-11T04:00:00.000Z'),
+            endAt: new Date('2026-08-12T04:00:00.000Z'),
+          },
+        ],
+      }),
+    );
+    expect(dayOff.intervals).toEqual([]);
+    expect(dayOff.reason).toBe('This barber is off on this date.');
+
+    // 14:00–15:30 local out of the 13:30–18:00 afternoon leaves two pieces.
+    const block = computeScheduledIntervals(
+      makeScheduledInput({
+        scheduleExceptions: [
+          {
+            type: 'BLOCK',
+            startAt: new Date('2026-08-11T18:00:00.000Z'),
+            endAt: new Date('2026-08-11T19:30:00.000Z'),
+          },
+        ],
+      }),
+    );
+    expect(block.reason).toBeNull();
+    expect(block.intervals).toHaveLength(3);
+  });
+
+  it('adds extra hours before subtracting, on a day with no weekly rule', () => {
+    const result = computeScheduledIntervals(
+      makeScheduledInput({
+        date: '2026-08-09', // Sunday — no weekly rule.
+        shopHours: SHOP_HOURS.map((rule) =>
+          rule.dayOfWeek === 0
+            ? { dayOfWeek: 0, openMinute: 540, closeMinute: 1200, isClosed: false }
+            : rule,
+        ),
+        scheduleExceptions: [
+          {
+            type: 'EXTRA_HOURS',
+            startAt: new Date('2026-08-09T13:00:00.000Z'),
+            endAt: new Date('2026-08-09T18:00:00.000Z'),
+          },
+        ],
+      }),
+    );
+    expect(result.reason).toBeNull();
+    expect(result.intervals.map((i) => [i.start.toISOString(), i.end.toISOString()])).toEqual([
+      ['2026-08-09T13:00:00.000Z', '2026-08-09T18:00:00.000Z'],
+    ]);
+  });
+
+  it('resolves a shift on the fall-back day without drifting an hour', () => {
+    // 2026-11-01 — the 25-hour day. 10:00–13:00 local is EST by opening: 15:00Z.
+    const result = computeScheduledIntervals(
+      makeScheduledInput({
+        date: '2026-11-01',
+        shopHours: SHOP_HOURS.map((rule) =>
+          rule.dayOfWeek === 0
+            ? { dayOfWeek: 0, openMinute: 540, closeMinute: 1200, isClosed: false }
+            : rule,
+        ),
+        barberSchedules: [{ dayOfWeek: 0, startMinute: 600, endMinute: 780 }],
+      }),
+    );
+    expect(result.intervals.map((i) => [i.start.toISOString(), i.end.toISOString()])).toEqual([
+      ['2026-11-01T15:00:00.000Z', '2026-11-01T18:00:00.000Z'],
+    ]);
   });
 });
 

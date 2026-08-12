@@ -466,3 +466,113 @@ describe.skipIf(!reachable)('authorization', () => {
     await request(server).get(`/api/barbers/${ownId}/schedule`).expect(401);
   });
 });
+
+describe.skipIf(!reachable)('GET /working-hours', () => {
+  // 2026-08-18 is a Tuesday — the weekday the fixture schedule below is for.
+  const TUESDAY = '2026-08-18';
+
+  beforeEach(async () => {
+    await reseed();
+
+    // Tuesday must be open. Matches what the seed already has rather than widening
+    // it, so nothing else sees a different Tuesday, and cleanup can leave it alone.
+    await prisma.shopHours.upsert({
+      where: { dayOfWeek_openMinute: { dayOfWeek: 2, openMinute: 540 } },
+      update: { closeMinute: 1020, isClosed: false },
+      create: { dayOfWeek: 2, openMinute: 540, closeMinute: 1020, isClosed: false },
+    });
+
+    // Schedbarber works the split Tuesday; Otherbarber has no schedule at all.
+    const ownId = await barberIdFor(BARBER_EMAIL);
+    await prisma.barberSchedule.createMany({
+      data: [
+        { barberId: ownId, dayOfWeek: 2, startMinute: 600, endMinute: 780 },
+        { barberId: ownId, dayOfWeek: 2, startMinute: 810, endMinute: 1080 },
+      ],
+    });
+  });
+
+  it('forces a barber to their own chair, whatever barberId they pass', async () => {
+    const barber = await signIn(BARBER_EMAIL);
+    const ownId = await barberIdFor(BARBER_EMAIL);
+    const otherId = await barberIdFor(OTHER_EMAIL);
+
+    const response = await request(server)
+      .get(`/api/working-hours?from=${TUESDAY}&days=1&barberId=${otherId}`)
+      .set('Cookie', barber.cookies)
+      .expect(200);
+
+    expect(response.body.days).toHaveLength(1);
+    expect(response.body.days[0].date).toBe(TUESDAY);
+    // The requested barberId was overwritten with their own — nobody else's day came back.
+    expect(response.body.days[0].barbers).toHaveLength(1);
+
+    const own = response.body.days[0].barbers[0];
+    expect(own.barberId).toBe(ownId);
+    expect(own.reason).toBeNull();
+    // The split shift arrives as two intervals: 10:00–13:00, then 13:30 until the
+    // shop's 17:00 close clips the 18:00 shift end — working ∩ open, not just working.
+    expect(own.intervals).toEqual([
+      { startAt: '2026-08-18T14:00:00.000Z', endAt: '2026-08-18T17:00:00.000Z' },
+      { startAt: '2026-08-18T17:30:00.000Z', endAt: '2026-08-18T21:00:00.000Z' },
+    ]);
+  });
+
+  it('gives an admin every active barber when none is named', async () => {
+    const admin = await signIn(ADMIN_EMAIL);
+    const ownId = await barberIdFor(BARBER_EMAIL);
+    const otherId = await barberIdFor(OTHER_EMAIL);
+
+    const response = await request(server)
+      .get(`/api/working-hours?from=${TUESDAY}&days=2`)
+      .set('Cookie', admin.cookies)
+      .expect(200);
+
+    expect(response.body.days).toHaveLength(2);
+    expect(response.body.days[1].date).toBe('2026-08-19');
+
+    // The shared database may hold other files' barbers — find ours, never index.
+    const rows = response.body.days[0].barbers as {
+      barberId: string;
+      intervals: unknown[];
+      reason: string | null;
+    }[];
+    const scheduled = rows.find((row) => row.barberId === ownId);
+    const unscheduled = rows.find((row) => row.barberId === otherId);
+
+    expect(scheduled?.intervals).toHaveLength(2);
+    expect(scheduled?.reason).toBeNull();
+    // No schedule rows at all — the engine's own sentence, not an empty shrug.
+    expect(unscheduled?.intervals).toHaveLength(0);
+    expect(unscheduled?.reason).toBe('This barber is not working on this day.');
+  });
+
+  it('lets an admin narrow to one barber', async () => {
+    const admin = await signIn(ADMIN_EMAIL);
+    const otherId = await barberIdFor(OTHER_EMAIL);
+
+    const response = await request(server)
+      .get(`/api/working-hours?from=${TUESDAY}&days=1&barberId=${otherId}`)
+      .set('Cookie', admin.cookies)
+      .expect(200);
+
+    expect(response.body.days[0].barbers).toHaveLength(1);
+    expect(response.body.days[0].barbers[0].barberId).toBe(otherId);
+  });
+
+  it('rejects a malformed date and an out-of-range span', async () => {
+    const admin = await signIn(ADMIN_EMAIL);
+    await request(server)
+      .get('/api/working-hours?from=18-08-2026')
+      .set('Cookie', admin.cookies)
+      .expect(400);
+    await request(server)
+      .get(`/api/working-hours?from=${TUESDAY}&days=60`)
+      .set('Cookie', admin.cookies)
+      .expect(400);
+  });
+
+  it('401s anonymous access', async () => {
+    await request(server).get(`/api/working-hours?from=${TUESDAY}`).expect(401);
+  });
+});

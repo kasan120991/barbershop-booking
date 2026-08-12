@@ -56,6 +56,33 @@ export interface DatedException {
 }
 
 /**
+ * The schedule half of the question: when is this barber meant to be behind the
+ * chair on this date, before anyone books a minute of it?
+ *
+ * Split out from `FreeTimeInput` because the staff calendar needs exactly this and
+ * nothing more — it draws working time as ground and appointments as blocks on top,
+ * so subtracting the busy time here would erase the very thing it renders onto.
+ */
+export interface ScheduledTimeInput {
+  /** Local calendar date in the shop's zone, "YYYY-MM-DD". */
+  date: string;
+  timezone: string;
+
+  barberSchedules: WeeklyRule[];
+  shopHours: ShopHoursRule[];
+  /** UTC instants; `endAt` exclusive. */
+  shopClosures: Interval[];
+  scheduleExceptions: DatedException[];
+}
+
+export interface ScheduledTimeResult {
+  /** Working stretches after every schedule rule, ascending. Empty when `reason` is set. */
+  intervals: Interval[];
+  /** Why there is no working time, so a caller can explain rather than shrug. */
+  reason: string | null;
+}
+
+/**
  * Everything needed to work out when a barber is free — but not how that free time
  * gets carved into offerable start times.
  *
@@ -64,20 +91,12 @@ export interface DatedException {
  * choices. One implementation of the schedule algebra serves both, so a rule about
  * closures or extra hours can never be right in one and wrong in the other.
  */
-export interface FreeTimeInput {
-  /** Local calendar date in the shop's zone, "YYYY-MM-DD". */
-  date: string;
-  timezone: string;
+export interface FreeTimeInput extends ScheduledTimeInput {
   bufferMinutes: number;
   bookingHorizonDays: number;
   /** Injected so tests are deterministic. */
   now: Date;
 
-  barberSchedules: WeeklyRule[];
-  shopHours: ShopHoursRule[];
-  /** UTC instants; `endAt` exclusive. */
-  shopClosures: Interval[];
-  scheduleExceptions: DatedException[];
   /**
    * Everything already committed on this barber's day — booked appointments, plus
    * the live queue when the caller is offering online slots.
@@ -154,13 +173,17 @@ function rulesToIntervals(
 }
 
 /**
- * When is this barber actually free on this date?
+ * When is this barber scheduled to work on this date, closures and time off applied?
  *
  * Order matters and is not interchangeable: extra hours are *added* before anything
  * is subtracted, because they grant time the weekly pattern does not contain; time
  * off is subtracted after, because it overrides both.
+ *
+ * Deliberately knows nothing about the booking horizon or existing bookings — the
+ * staff calendar reads this to shade non-working time, and it looks both past the
+ * horizon and at days that are fully booked.
  */
-export function computeFreeIntervals(input: FreeTimeInput): FreeTimeResult {
+export function computeScheduledIntervals(input: ScheduledTimeInput): ScheduledTimeResult {
   const dayStart = DateTime.fromISO(input.date, { zone: input.timezone }).startOf('day');
   if (!dayStart.isValid) {
     throw new ValidationError('That date could not be understood.');
@@ -171,16 +194,7 @@ export function computeFreeIntervals(input: FreeTimeInput): FreeTimeResult {
   // `.weekday` is Monday=1..Sunday=7; the schema is Sunday=0..Saturday=6.
   const dayOfWeek = dayStart.weekday % 7;
 
-  const empty = (reason: string): FreeTimeResult => ({ free: [], reason });
-
-  // Beyond the horizon, or in the past — nothing is bookable regardless of hours.
-  const horizonEnd = DateTime.fromJSDate(input.now)
-    .setZone(input.timezone)
-    .startOf('day')
-    .plus({ days: input.bookingHorizonDays });
-  if (dayStart > horizonEnd) {
-    return empty(`Bookings only open ${String(input.bookingHorizonDays)} days ahead.`);
-  }
+  const empty = (reason: string): ScheduledTimeResult => ({ intervals: [], reason });
 
   // 1. When is the shop open on this weekday? Normalized to the shift shape first,
   //    because the two tables name their columns differently.
@@ -211,20 +225,42 @@ export function computeFreeIntervals(input: FreeTimeInput): FreeTimeResult {
   if (working.length === 0) return empty('This barber is not working on this day.');
 
   // 4. Working AND open.
-  let free = intersectIntervals(working, shopOpen);
-  if (free.length === 0) return empty('This barber is not working while the shop is open.');
+  let scheduled = intersectIntervals(working, shopOpen);
+  if (scheduled.length === 0) return empty('This barber is not working while the shop is open.');
 
   // 5. Time off and mid-day blocks.
   const timeOff = input.scheduleExceptions
     .filter((exception) => exception.type !== 'EXTRA_HOURS')
     .map((exception) => ({ start: exception.startAt, end: exception.endAt }));
-  free = subtractIntervals(free, timeOff);
-  if (free.length === 0) return empty('This barber is off on this date.');
+  scheduled = subtractIntervals(scheduled, timeOff);
+  if (scheduled.length === 0) return empty('This barber is off on this date.');
+
+  return { intervals: scheduled, reason: null };
+}
+
+/** When is this barber actually free on this date? */
+export function computeFreeIntervals(input: FreeTimeInput): FreeTimeResult {
+  const dayStart = DateTime.fromISO(input.date, { zone: input.timezone }).startOf('day');
+  if (!dayStart.isValid) {
+    throw new ValidationError('That date could not be understood.');
+  }
+
+  // Beyond the horizon, or in the past — nothing is bookable regardless of hours.
+  const horizonEnd = DateTime.fromJSDate(input.now)
+    .setZone(input.timezone)
+    .startOf('day')
+    .plus({ days: input.bookingHorizonDays });
+  if (dayStart > horizonEnd) {
+    return { free: [], reason: `Bookings only open ${String(input.bookingHorizonDays)} days ahead.` };
+  }
+
+  const scheduled = computeScheduledIntervals(input);
+  if (scheduled.reason !== null) return { free: [], reason: scheduled.reason };
 
   // 6. Existing commitments, each extended by the turnaround buffer so the next
   //    client is not seated the instant the previous one stands up.
-  free = subtractIntervals(free, padEnd(input.busy, input.bufferMinutes));
-  if (free.length === 0) return empty('Fully booked.');
+  const free = subtractIntervals(scheduled.intervals, padEnd(input.busy, input.bufferMinutes));
+  if (free.length === 0) return { free: [], reason: 'Fully booked.' };
 
   return { free, reason: null };
 }

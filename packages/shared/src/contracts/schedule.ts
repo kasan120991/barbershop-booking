@@ -152,3 +152,49 @@ export const createScheduleExceptionRequestSchema = z
     path: ['allDay'],
   });
 export type CreateScheduleExceptionRequest = z.infer<typeof createScheduleExceptionRequestSchema>;
+
+// --- Working hours -----------------------------------------------------------
+
+/**
+ * The staff calendar's ground: for each barber and local date, when are they
+ * meant to be behind the chair — schedule ∩ shop hours, closures and time off
+ * applied, bookings NOT subtracted. The calendar draws these stretches as working
+ * track and paints appointments on top, so free time and booked time both live
+ * inside them.
+ */
+export const workingHoursQuerySchema = z.object({
+  from: z.string().regex(LOCAL_DATE_PATTERN, { error: 'Use YYYY-MM-DD.' }),
+  days: z.int().min(1).max(31).default(1),
+  /** Omitted by an admin to get every active barber; forced server-side for a barber. */
+  barberId: z.string().optional(),
+});
+export type WorkingHoursQuery = z.infer<typeof workingHoursQuerySchema>;
+
+export const workingIntervalDtoSchema = z.object({
+  /** UTC instants; `endAt` exclusive. */
+  startAt: z.string(),
+  endAt: z.string(),
+});
+export type WorkingIntervalDto = z.infer<typeof workingIntervalDtoSchema>;
+
+export const workingHoursBarberDayDtoSchema = z.object({
+  barberId: z.string(),
+  /** Ascending, non-overlapping. A split shift is two entries. Empty when `reason` is set. */
+  intervals: z.array(workingIntervalDtoSchema),
+  /** The availability engine's own sentence for a day with no working time. */
+  reason: z.string().nullable(),
+});
+export type WorkingHoursBarberDayDto = z.infer<typeof workingHoursBarberDayDtoSchema>;
+
+export const workingHoursDayDtoSchema = z.object({
+  /** Local date in the shop's zone, "YYYY-MM-DD". */
+  date: z.string(),
+  barbers: z.array(workingHoursBarberDayDtoSchema),
+});
+export type WorkingHoursDayDto = z.infer<typeof workingHoursDayDtoSchema>;
+
+export const workingHoursResponseSchema = z.object({
+  timezone: z.string(),
+  days: z.array(workingHoursDayDtoSchema),
+});
+export type WorkingHoursResponse = z.infer<typeof workingHoursResponseSchema>;

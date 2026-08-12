@@ -13,6 +13,7 @@ import {
   replaceBarberScheduleRequestSchema,
   ROLE,
   updateBarberRequestSchema,
+  workingHoursQuerySchema,
   type BarberScheduleDto,
   type CreatedBarberDto,
 } from '@francis/shared';
@@ -22,7 +23,7 @@ import type { Role } from '../generated/prisma/enums.js';
 import { pathParam } from '../lib/http.js';
 import { prisma } from '../lib/prisma.js';
 import { toBarberStaffDto } from '../mappers/catalog.js';
-import { requireBarberSelfOrAdmin, requireRole } from '../middleware/require-auth.js';
+import { requireBarberSelfOrAdmin, requireRole, requireUser } from '../middleware/require-auth.js';
 import { auditContext, recordAudit } from '../services/audit.js';
 import {
   createScheduleException,
@@ -32,6 +33,7 @@ import {
   replaceBarberSchedule,
 } from '../services/schedules.js';
 import { createBarber, getBarber, updateBarber } from '../services/staff.js';
+import { getWorkingHours } from '../services/working-hours.js';
 
 export const barberRouter: Router = Router();
 
@@ -126,6 +128,33 @@ barberRouter.put('/barbers/:barberId/schedule', adminOnly, async (req, res) => {
       endMinute: shift.endMinute,
     })),
   });
+});
+
+// --- Working hours -----------------------------------------------------------
+
+/**
+ * Resolved working intervals for the staff calendar — schedule ∩ shop hours,
+ * closures and time off applied. Read-only and side-effect free, so `requireUser`
+ * with the same scoping as `GET /appointments`: a barber is forced to their own
+ * chair, an admin gets every active barber unless they name one.
+ */
+barberRouter.get('/working-hours', requireUser, async (req, res) => {
+  const raw = req.query as Record<string, unknown>;
+
+  const barberId =
+    req.auth?.kind === 'user' && !req.auth.roles.includes(ROLE.ADMIN as Role)
+      ? (req.auth.barberId ?? undefined)
+      : typeof raw.barberId === 'string'
+        ? raw.barberId
+        : undefined;
+
+  const query = workingHoursQuerySchema.parse({
+    from: raw.from,
+    days: typeof raw.days === 'string' ? Number(raw.days) : undefined,
+    barberId,
+  });
+
+  res.json(await getWorkingHours(query));
 });
 
 // --- Time off ----------------------------------------------------------------
