@@ -32,6 +32,7 @@ import {
   formatDuration,
   type AppointmentDto,
   type QueueEntryDto,
+  type WorkingHoursResponse,
 } from '@francis/shared';
 
 useHead({ title: 'My Day — Francis Cutz' });
@@ -174,8 +175,8 @@ const voids = computed(() =>
  * is exactly what is being shown — but only where it has produced a time, since an entry
  * it cannot place has nowhere to sit on a list ordered by time.
  */
-const walkIns = computed<QueueEntryDto[]>(() => {
-  if (!isToday.value || barberId.value === null) return [];
+const chairWalkIns = computed<QueueEntryDto[]>(() => {
+  if (barberId.value === null) return [];
   return (queue.board.value?.entries ?? []).filter(
     (entry) =>
       entry.assignedBarberId === barberId.value &&
@@ -183,6 +184,10 @@ const walkIns = computed<QueueEntryDto[]>(() => {
       ['WAITING', 'CALLED', 'IN_CHAIR'].includes(entry.status),
   );
 });
+
+/** The agenda's copy — only when the day being looked at is today. The week view
+ *  gates per column instead, so stepping the cursor cannot move today's walk-ins. */
+const walkIns = computed<QueueEntryDto[]>(() => (isToday.value ? chairWalkIns.value : []));
 
 const items = computed<DayItem[]>(() =>
   [
@@ -290,6 +295,61 @@ const weekStats = computed(() => {
     cuts: live.length,
     takings: formatCents(live.reduce((total, a) => total + a.priceCentsTotal, 0)),
   };
+});
+
+// --- The week as a time grid ---------------------------------------------------
+
+const columnsApi = useCalendarColumns();
+const workingHoursApi = useWorkingHours();
+
+const weekOf = computed(() => shop.weekStart(cursor.value));
+const workingWeek = ref<WorkingHoursResponse | null>(null);
+
+/**
+ * Shading is a courtesy the grid can survive without — a failure here leaves the
+ * blocks on bare ground rather than raising a toast over a page that still works.
+ */
+async function loadWorkingWeek(): Promise<void> {
+  if (barberId.value === null) return;
+  try {
+    workingWeek.value = await workingHoursApi.loadWorkingHours(weekOf.value, 7, barberId.value);
+  } catch {
+    workingWeek.value = null;
+  }
+}
+
+watch(
+  [weekOf, view],
+  () => {
+    if (view.value === 'week') void loadWorkingWeek();
+  },
+  { immediate: true },
+);
+
+const weekColumns = computed(() =>
+  weekDays.value.map((day) =>
+    columnsApi.buildColumn({
+      key: day.date,
+      today: day.today,
+      appointments: day.appointments,
+      // Gated per column, not on the cursor: today's projections stay on today's
+      // column wherever in the week the cursor happens to sit.
+      queueEntries: day.today ? chairWalkIns.value : [],
+      workingDay:
+        workingWeek.value?.days.find((d) => d.date === day.date)?.barbers[0] ?? null,
+      showVoids: false,
+    }),
+  ),
+);
+
+const weekExtent = computed(() => columnsApi.gridExtent(weekColumns.value));
+
+const weekMeta = computed(() => new Map(weekDays.value.map((day) => [day.date, day])));
+
+/** The server's clock, borrowed from the queue board — never the browser's. */
+const nowMinute = computed(() => {
+  const generatedAt = queue.board.value?.generatedAt;
+  return generatedAt === undefined ? null : shop.minuteOfDay(generatedAt);
 });
 
 // --- Moving about -------------------------------------------------------------
@@ -664,35 +724,34 @@ function rowClass(item: DayItem) {
           </span>
         </div>
 
-        <div class="week">
-          <button
-            v-for="day in weekDays"
-            :key="day.date"
-            type="button"
-            class="wday"
-            :class="{ today: day.today, bare: day.appointments.length === 0 }"
-            @click="openDay(day.date)"
-          >
-            <span class="dh">
-              <span class="dn">{{ day.label }}</span>
-              <span class="dd">{{ day.dayNumber }}</span>
+        <CalendarTimeGrid
+          :columns="weekColumns"
+          :start-minute="weekExtent.startMinute"
+          :end-minute="weekExtent.endMinute"
+          :now-minute="nowMinute"
+          interactive
+          @column-click="(column) => openDay(column.key)"
+          @block-click="(block) => openDay(shop.localDate(block.data.startAt))"
+        >
+          <template #head="{ column }">
+            <span class="dh" :class="{ today: column.today }">
+              <span class="dn">{{ weekMeta.get(column.key)?.label }}</span>
+              <span class="dd">{{ weekMeta.get(column.key)?.dayNumber }}</span>
             </span>
-
-            <span v-if="day.appointments.length === 0" class="quiet-day">Nothing booked</span>
-
-            <span v-else class="chips">
-              <span v-for="appointment in day.appointments" :key="appointment.id" class="chip">
-                <span class="ct">{{ shop.clock(appointment.startAt) }}</span>
-                <span class="cn">{{ appointment.clientName }}</span>
+          </template>
+          <template #foot="{ column }">
+            <span
+              v-if="(weekMeta.get(column.key)?.appointments.length ?? 0) > 0"
+              class="wtot"
+            >
+              <span>
+                {{ weekMeta.get(column.key)?.appointments.length }}
+                {{ weekMeta.get(column.key)?.appointments.length === 1 ? 'cut' : 'cuts' }}
               </span>
+              <b>{{ formatCents(weekMeta.get(column.key)?.takings ?? 0) }}</b>
             </span>
-
-            <span v-if="day.appointments.length > 0" class="tot">
-              <span>{{ day.appointments.length }} {{ day.appointments.length === 1 ? 'cut' : 'cuts' }}</span>
-              <b>{{ formatCents(day.takings) }}</b>
-            </span>
-          </button>
-        </div>
+          </template>
+        </CalendarTimeGrid>
       </template>
     </template>
 
@@ -1110,50 +1169,7 @@ function rowClass(item: DayItem) {
 }
 
 /* --- The week --------------------------------------------------------------- */
-
-.week {
-  display: grid;
-  grid-template-columns: repeat(7, minmax(0, 1fr));
-  gap: 0.5rem;
-  align-items: stretch;
-}
-
-.wday {
-  appearance: none;
-  font: inherit;
-  text-align: left;
-  cursor: pointer;
-  border: 1px solid var(--fc-line);
-  border-radius: 8px;
-  background: var(--fc-surface);
-  color: inherit;
-  padding: 0.7rem 0.6rem;
-  display: flex;
-  flex-direction: column;
-  gap: 0.4rem;
-  min-height: 11rem;
-  min-width: 0;
-}
-
-.wday:hover {
-  border-color: var(--fc-accent);
-}
-
-.wday:focus-visible {
-  outline: 2px solid var(--fc-accent);
-  outline-offset: 1px;
-}
-
-.wday.today {
-  border-color: var(--fc-accent);
-  background: var(--fc-accent-wash);
-}
-
-/* A day with nothing on it is not a card, it is an absence. */
-.wday.bare {
-  background: transparent;
-  border-style: dashed;
-}
+/* The grid itself is `CalendarTimeGrid`; these style the header and footer slots. */
 
 .dh {
   display: flex;
@@ -1177,58 +1193,17 @@ function rowClass(item: DayItem) {
   font-variant-numeric: tabular-nums;
 }
 
-.wday.today .dd {
+.dh.today .dd {
   color: var(--fc-accent);
 }
 
-.chips {
-  display: flex;
-  flex-direction: column;
-  gap: 0.25rem;
-  min-width: 0;
-}
-
-.chip {
-  border: 1px solid var(--fc-line);
-  border-radius: 5px;
-  background: var(--fc-input);
-  padding: 0.22rem 0.4rem;
-  font-size: 0.6875rem;
-  display: flex;
-  flex-direction: column;
-  min-width: 0;
-}
-
-.ct {
-  font-variant-numeric: tabular-nums;
-  color: var(--fc-ink-muted);
-}
-
-.cn {
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.quiet-day {
-  font-size: 0.6875rem;
-  color: var(--fc-ink-faint);
-  font-style: italic;
-}
-
-.tot {
-  margin-top: auto;
-  padding-top: 0.4rem;
-  border-top: 1px solid var(--fc-line-soft);
-  font-size: 0.6875rem;
-  color: var(--fc-ink-faint);
-  font-variant-numeric: tabular-nums;
+.wtot {
   display: flex;
   justify-content: space-between;
   gap: 0.4rem;
 }
 
-.tot b {
+.wtot b {
   color: var(--fc-ink-muted);
   font-weight: 600;
 }
@@ -1257,20 +1232,6 @@ function rowClass(item: DayItem) {
 
   .acts {
     justify-content: flex-start;
-  }
-
-  .week {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
-  .wday {
-    min-height: 0;
-  }
-}
-
-@media (max-width: 640px) {
-  .week {
-    grid-template-columns: 1fr;
   }
 }
 </style>
