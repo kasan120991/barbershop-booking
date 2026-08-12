@@ -93,6 +93,17 @@ export function toPublicQueueBoardDto(board: QueueBoard): PublicQueueBoardDto {
       .map((row) => [row.entry.barberId, row.entry.client.firstName.trim()]),
   );
 
+  /**
+   * Called, but not yet sat down. `callNext` attaches them to a chair, so the barber id
+   * is on the row — which is what lets the wall board put a name under the right chair
+   * without matching on a display name two barbers could share.
+   */
+  const calledUp = new Map(
+    board.entries
+      .filter((row) => row.entry.status === 'CALLED')
+      .map((row) => [row.entry.barberId, row.entry.client.firstName.trim()]),
+  );
+
   return {
     generatedAt: board.generatedAt.toISOString(),
     queueEnabled: board.queueEnabled,
@@ -113,6 +124,7 @@ export function toPublicQueueBoardDto(board: QueueBoard): PublicQueueBoardDto {
       displayName: chair.displayName,
       // First name only in the headline — even an initial is more than the room needs.
       nowServing: nowServing.get(chair.barberId) ?? null,
+      calledUp: calledUp.get(chair.barberId) ?? null,
       freeFrom: chair.freeFrom?.toISOString() ?? null,
     })),
     entries: board.entries.map((row) => ({

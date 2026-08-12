@@ -144,6 +144,19 @@ export const publicQueueBoardDtoSchema = z.object({
       barberId: z.string(),
       displayName: z.string(),
       nowServing: z.string().nullable(),
+      /**
+       * Whoever has been called up to this chair and has not sat down yet.
+       *
+       * Separate from `nowServing` because they are a different fact: one is a cut
+       * happening, the other is a person being summoned across a room. The wall board
+       * names them under the barber they are walking to, which is the one thing a called
+       * customer needs and the board could not previously say — `nowServing` covers only
+       * somebody already seated, and the entry rows carry a barber's NAME rather than an
+       * id, so the screen had nothing reliable to match a chair on.
+       *
+       * First name only, like everything else that faces the room.
+       */
+      calledUp: z.string().nullable(),
       freeFrom: z.iso.datetime().nullable(),
     }),
   ),

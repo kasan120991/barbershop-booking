@@ -181,10 +181,23 @@ const overflow = computed(() => Math.max(0, rows.value.length - MAX_ROWS));
               v-for="chair in screen.chairs.value"
               :key="chair.barberId"
               class="chair"
-              :class="{ busy: Boolean(chair.nowServing) }"
+              :class="{ busy: Boolean(chair.nowServing), calling: Boolean(chair.calledUp) }"
             >
               <span class="chair-who">{{ chair.displayName }}</span>
               <span v-if="chair.nowServing" class="chair-now">{{ chair.nowServing }}</span>
+
+              <!--
+                Somebody has been called to this chair and is still crossing the room.
+                Their name goes under the barber they are walking to — that pairing is
+                the whole instruction, and it is the one thing the board could not say
+                before. The chair is not free while they are on their way, so it says so
+                rather than counting down to a time that no longer means anything.
+              -->
+              <template v-else-if="chair.calledUp">
+                <span class="chair-called">{{ chair.calledUp }}</span>
+                <span class="chair-now up">Come on up</span>
+              </template>
+
               <span v-else class="chair-now free">{{ chairLabel(chair.freeFrom) }}</span>
             </article>
           </div>
@@ -403,7 +416,8 @@ const overflow = computed(() => Math.max(0, rows.value.length - MAX_ROWS));
 }
 
 /* Brass marks occupied, not free — the eye should land on where the shop is busy. */
-.chair.busy {
+.chair.busy,
+.chair.calling {
   border-color: var(--fcb-accent);
   background: var(--fcb-accent-wash);
 }
@@ -428,6 +442,28 @@ const overflow = computed(() => Math.max(0, rows.value.length - MAX_ROWS));
 .chair-now.free {
   color: var(--fcb-accent);
   font-size: calc(2.2 * var(--u));
+}
+
+/*
+ * The person being called, under the barber they are walking to.
+ *
+ * Italic and a size down from a name in the chair: they are not in it yet, and the
+ * difference has to read from across the room without anybody parsing a word.
+ */
+.chair-called {
+  font-family: var(--fcb-font-display);
+  font-size: calc(1.9 * var(--u));
+  font-style: italic;
+  font-weight: 620;
+  line-height: 1.15;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chair-now.up {
+  color: var(--fcb-accent);
+  font-size: calc(1.6 * var(--u));
 }
 
 /* --- The line ------------------------------------------------------------------- */
