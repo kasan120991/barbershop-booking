@@ -164,6 +164,24 @@ body {
   margin-bottom: 0.4375rem;
 }
 
+/**
+ * The panel every page draws things on.
+ *
+ * This recipe already exists four times — `earnings.vue`, `take-payment.vue`,
+ * `my-rent.vue` and `RentPanel.vue` each declare a local `.card`, at three different
+ * paddings and two radii. That is exactly the drift `.fc-input` above was consolidated to
+ * stop, and the fifth copy is the cheapest one to not write.
+ *
+ * Namespaced `fc-` so it cannot collide with the page-local `.card` rules still in place;
+ * converting those four is a separate tidy.
+ */
+.fc-card {
+  border: 1px solid var(--fc-line);
+  background: var(--fc-surface);
+  border-radius: 8px;
+  padding: 1rem;
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,

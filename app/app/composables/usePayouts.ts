@@ -74,6 +74,44 @@ export function usePayouts() {
     }
   }
 
+  /**
+   * The takings on their own — a database read, and nothing else.
+   *
+   * `/today` is the screen a barber opens fifty times a day, and it is the route the
+   * guard sends every non-admin to on sign-in. `refresh` above would make each of those
+   * a live Stripe call on the server-rendered pass; this one cannot, because it does not
+   * ask Stripe anything.
+   *
+   * Deliberately not expressed in terms of `refresh`: that function's "all three started
+   * before the first await" property is load-bearing for SSR cookie forwarding, and three
+   * duplicated lines cost less than reasoning about that rule a second time.
+   */
+  async function loadSummary(barberId: string): Promise<void> {
+    summary.value = await api<EarningsSummaryDto>(`/barbers/${barberId}/earnings`);
+  }
+
+  /**
+   * The Stripe balance, on its own and never on the server-rendered pass.
+   *
+   * A live `balance.retrieve` against the connected account, so a page that awaits it in
+   * setup makes every sign-in wait on a third party — and 409s outright for a chair that
+   * has not finished onboarding, which is the ordinary state of a new barber. Called from
+   * `onMounted` instead, where a slow answer costs nothing and a missing one is a line
+   * that simply is not drawn.
+   *
+   * Never throws, for the same reason: this is a secondary figure and no screen should
+   * fail over it.
+   */
+  async function loadBalance(barberId: string): Promise<void> {
+    balanceUnavailable.value = false;
+    try {
+      balance.value = await api<BalanceDto>(`/barbers/${barberId}/balance`);
+    } catch {
+      balance.value = null;
+      balanceUnavailable.value = true;
+    }
+  }
+
   async function cashOut(barberId: string, amountCents: number): Promise<PayoutDto> {
     cashingOut.value = true;
     try {
@@ -118,6 +156,8 @@ export function usePayouts() {
     cashingOut,
     balanceUnavailable,
     refresh,
+    loadSummary,
+    loadBalance,
     cashOut,
     quote,
     feesPaidCents,

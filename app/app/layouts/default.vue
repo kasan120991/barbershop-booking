@@ -27,7 +27,6 @@ import type { MenuItem } from 'primevue/menuitem';
 const auth = useAuthStore();
 const route = useRoute();
 const { mode, canSwitch, setMode, homeRoute } = useShopMode();
-const { items } = useNavigation();
 const { collapsed, toggle: toggleRail } = useRailState();
 
 /**
@@ -60,9 +59,7 @@ const retrying = ref(false);
 const accountMenu = useTemplateRef<{ toggle: (event: Event) => void }>('accountMenu');
 
 /** The nav label of the current route, used as the page title in the top strip. */
-const currentLabel = computed(
-  () => items.value.find((item) => item.to === route.path)?.label ?? '',
-);
+const currentLabel = computed(() => navLabelFor(route.path));
 
 /**
  * The shop's date, not the browser's.
@@ -118,8 +115,9 @@ async function onSwitchMode(next: 'shop' | 'chair') {
   setMode(next);
   drawerOpen.value = false;
   // Land on the new hat's home rather than leaving them on a page that belongs to
-  // the mode they just left.
-  await navigateTo(next === 'shop' ? '/calendar' : '/my-day');
+  // the mode they just left. `homeRouteFor` rather than the computed: the cookie has
+  // only just been written, so the computed still answers for the mode being left.
+  await navigateTo(homeRouteFor(next));
 }
 </script>
 
@@ -265,7 +263,15 @@ async function onSwitchMode(next: 'shop' | 'chair') {
       </main>
     </div>
 
-    <Drawer v-model:visible="drawerOpen" header="Menu" class="nav-drawer">
+    <!-- Sized here rather than in CSS: the drawer is teleported to `<body>`, so a scoped
+         rule would not reach it. PrimeVue's default 20rem leaves about 70px of page
+         showing on a 390px phone, which reads as a broken overlay rather than a menu. -->
+    <Drawer
+      v-model:visible="drawerOpen"
+      header="Menu"
+      class="nav-drawer"
+      :style="{ width: 'min(19rem, 84vw)' }"
+    >
       <div class="drawer-inner">
         <div v-if="canSwitch" class="mode-switch">
           <button type="button" :class="{ on: mode === 'shop' }" @click="onSwitchMode('shop')">
@@ -659,8 +665,52 @@ async function onSwitchMode(next: 'shop' | 'chair') {
     display: none;
   }
 
+  /**
+   * The bar and the strip stay put while the page scrolls.
+   *
+   * On a phone the drawer button is the ONLY way to reach navigation, and it used to
+   * scroll away with everything else — a barber working down their day lost the way out
+   * of the screen they were on. The two stick together rather than only the bar, because
+   * the strip carries the page's name and a title sliding out from under a bar that
+   * stayed is worse than neither sticking.
+   *
+   * Low z-indexes on purpose: PrimeVue teleports the drawer, toasts and dialogs to
+   * `<body>` and they must stay above these.
+   */
   .mobile-bar {
     display: flex;
+    position: sticky;
+    top: 0;
+    z-index: 20;
+  }
+
+  .topstrip {
+    position: sticky;
+    /* The bar's own height: a 44px target plus its 0.5rem padding and 1px border. */
+    top: calc(44px + 1rem + 1px);
+    z-index: 19;
+    /* The bar has a surface of its own; this one had none and content showed through. */
+    background: var(--fc-ground);
+  }
+
+  /*
+   * A thumb's target, not a pointer's. The type stays 11px — that is the eye's problem,
+   * and the pill is deliberately quiet.
+   */
+  .queue-pill {
+    min-height: 44px;
+    padding-inline: 0.875rem;
+  }
+}
+
+/*
+ * The mode switch lives in the drawer on a phone, which is exactly where a target being
+ * too small matters most. Scoped by pointer rather than width, the same way `AppNav` does
+ * it, so a touch-screen till gets the same treatment at any size.
+ */
+@media (pointer: coarse) {
+  .mode-switch button {
+    min-height: 44px;
   }
 }
 </style>
