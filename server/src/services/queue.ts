@@ -94,10 +94,27 @@ export interface QueueChairState {
   waitingCount: number;
 }
 
+/**
+ * The next opening for somebody who has not joined yet — the kiosk's headline.
+ *
+ * Deliberately NOT `QueueChairState.freeFrom`, which is the opposite measurement: that one
+ * is taken before the waiting line is allocated, so it answers "is this barber available".
+ * This one is taken after, so it answers "when could you sit down". A front door showing
+ * *free now* beside four people waiting is the exact lie this exists to avoid.
+ */
+export interface WalkUpOpening {
+  /** The duration the answer was computed against — see `AssignQueueInput.walkUp`. */
+  durationMinutes: number;
+  /** Null when nothing that long is left before closing. */
+  availableAt: Date | null;
+}
+
 export interface QueueEstimate {
   /** In board order: priority first, then arrival. */
   assignments: QueueAssignment[];
   chairs: QueueChairState[];
+  /** Null when the caller did not ask, or no chair can perform the probe service. */
+  walkUp: WalkUpOpening | null;
 }
 
 export interface AssignQueueInput {
@@ -105,6 +122,16 @@ export interface AssignQueueInput {
   bufferMinutes: number;
   chairs: readonly QueueChair[];
   entries: readonly QueueCandidate[];
+  /**
+   * A hypothetical arrival to measure the next opening against, or absent for none.
+   *
+   * Somebody standing at the kiosk has not chosen a service yet, so the caller picks one
+   * on their behalf — `getQueueBoard` uses the shortest walk-in-bookable service, which
+   * makes the answer "the soonest we could start on anyone" rather than a guess at what
+   * they will order. That is why the copy on the screen says *next opening* and not
+   * *your wait*; the real quote is made when they pick.
+   */
+  walkUp?: { durationMinutes: number; serviceIds: readonly string[] } | null;
 }
 
 /** Far enough out to act as "no upper bound" when clipping an interval. */
@@ -266,6 +293,37 @@ export function assignQueue(input: AssignQueueInput): QueueEstimate {
     });
   });
 
+  /**
+   * The walk-up probe, run last and on purpose.
+   *
+   * Every waiting entry has had its time reserved by now, so what is left in `free` is what
+   * a new arrival could actually have. Compare `freeFrom` above, snapshotted between the
+   * two passes — same chairs, opposite question, and the ordering is the only thing that
+   * makes them different answers.
+   *
+   * It never calls `reserve`. An estimate for somebody who has not joined must not consume
+   * a minute of anybody's day, or reading the board would change it.
+   */
+  const walkUp = ((): WalkUpOpening | null => {
+    const probe = input.walkUp ?? null;
+    if (probe === null) return null;
+
+    const eligible = [...chairs.values()].filter((chair) =>
+      probe.serviceIds.every((serviceId) => chair.serviceIds.has(serviceId)),
+    );
+    if (eligible.length === 0) return null;
+
+    const durationMs = probe.durationMinutes * 60_000;
+    let availableAt: Date | null = null;
+    for (const chair of eligible) {
+      const start = earliestFit(chair.free, durationMs);
+      if (start === null) continue;
+      if (availableAt === null || start < availableAt) availableAt = start;
+    }
+
+    return { durationMinutes: probe.durationMinutes, availableAt };
+  })();
+
   return {
     assignments: ordered.map(
       (entry) =>
@@ -277,6 +335,7 @@ export function assignQueue(input: AssignQueueInput): QueueEstimate {
           unservableReason: null,
         },
     ),
+    walkUp,
     chairs: [...chairs.values()].map((chair) => ({
       barberId: chair.barberId,
       nowServingEntryId: chair.nowServingEntryId,
@@ -314,7 +373,7 @@ export async function getQueueBoard(query: QueueBoardQuery = {}) {
   const settings = await prisma.shopSettings.findUnique({ where: { id: 1 } });
   if (!settings) throw new NotFoundError('Shop settings have not been set up.');
 
-  const [walkInBarbers, entries] = await Promise.all([
+  const [walkInBarbers, entries, shortestWalkIn] = await Promise.all([
     prisma.barber.findMany({
       where: { status: 'ACTIVE', acceptsWalkIns: true },
       include: { services: { select: { serviceId: true } } },
@@ -324,6 +383,19 @@ export async function getQueueBoard(query: QueueBoardQuery = {}) {
       where: { status: { in: ACTIVE } },
       include: ENTRY_INCLUDE,
       orderBy: [{ priority: 'desc' }, { joinedAt: 'asc' }],
+    }),
+    /**
+     * What the kiosk's "next opening" is measured against.
+     *
+     * The shortest thing the shop will take off the street, so the answer means "the
+     * soonest we could start on anyone" — a defensible, explainable number for somebody
+     * who has not chosen a service yet. `id` breaks the tie so two services of equal
+     * length cannot make the board flicker between refreshes.
+     */
+    prisma.service.findFirst({
+      where: { isActive: true, bookableWalkIn: true },
+      orderBy: [{ durationMinutes: 'asc' }, { id: 'asc' }],
+      select: { id: true, durationMinutes: true },
     }),
   ]);
 
@@ -386,6 +458,13 @@ export async function getQueueBoard(query: QueueBoardQuery = {}) {
     now,
     bufferMinutes: settings.bufferMinutes,
     chairs,
+    walkUp:
+      shortestWalkIn === null
+        ? null
+        : {
+            durationMinutes: shortestWalkIn.durationMinutes,
+            serviceIds: [shortestWalkIn.id],
+          },
     entries: entries.map((entry) => ({
       id: entry.id,
       barberId: entry.barberId,
@@ -404,6 +483,7 @@ export async function getQueueBoard(query: QueueBoardQuery = {}) {
   return {
     generatedAt: now,
     queueEnabled: settings.walkInQueueEnabled,
+    walkUp: estimate.walkUp,
     chairs: estimate.chairs.map((chair) => ({
       ...chair,
       displayName: nameById.get(chair.barberId) ?? 'Unknown',

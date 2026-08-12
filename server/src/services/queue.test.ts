@@ -373,3 +373,103 @@ describe('the end of the day', () => {
     expect(result.readyAt).toEqual({ long: null, quick: '17:30' });
   });
 });
+
+/**
+ * The walk-up probe — what the kiosk's front door puts on the glass.
+ *
+ * Every test here is really about *when* the measurement is taken. The probe and
+ * `QueueChairState.freeFrom` read the same chairs through the same intervals and give
+ * different answers, and the only difference between them is that one runs before the
+ * waiting line is allocated and the other runs after. The first test below is that pair,
+ * and it is the reason this block exists.
+ */
+describe('the next opening for a walk-up', () => {
+  /** The probe as local "HH:mm", read the same way as every other assertion here. */
+  function opening(result: ReturnType<typeof run>): string | null {
+    return local(result.walkUp?.availableAt ?? null);
+  }
+
+  const PROBE = { durationMinutes: 30, serviceIds: [CUT] };
+
+  it('is measured after the line, where freeFrom is measured before it', () => {
+    const result = run({
+      walkUp: PROBE,
+      entries: [
+        candidate({ id: 'first', durationMinutes: 30, joinedAt: at('09:00') }),
+        candidate({ id: 'second', durationMinutes: 30, joinedAt: at('09:05') }),
+      ],
+    });
+
+    // The line runs 10:00–11:00, so a new arrival sits down at 11:00.
+    expect(opening(result)).toBe('11:00');
+
+    // And the chair still reports itself available at 10:00, because that is a different
+    // question: the barber is free, it is the waiting area that is not.
+    expect(local(result.chairs[0]?.freeFrom ?? null)).toBe('10:00');
+  });
+
+  it('claims nothing — asking does not move the board', () => {
+    const entries = [
+      candidate({ id: 'first', durationMinutes: 30, joinedAt: at('09:00') }),
+      candidate({ id: 'second', durationMinutes: 45, joinedAt: at('09:05') }),
+    ];
+
+    const asked = run({ walkUp: PROBE, entries });
+    const unasked = run({ entries });
+
+    expect(asked.assignments).toEqual(unasked.assignments);
+    expect(asked.chairs).toEqual(unasked.chairs);
+  });
+
+  it('can use a gap the waiting cut in front of it could not', () => {
+    const result = run({
+      // Twenty free minutes, then a booked hour, then the rest of the day.
+      chairs: [
+        chair({
+          free: [
+            { start: at('10:00'), end: at('10:20') },
+            { start: at('11:00'), end: at('18:00') },
+          ],
+        }),
+      ],
+      walkUp: { durationMinutes: 20, serviceIds: [CUT] },
+      entries: [candidate({ id: 'long', durationMinutes: 30 })],
+    });
+
+    // The 30-minute cut cannot fit before the appointment and takes 11:00.
+    expect(result.readyAt.long).toBe('11:00');
+    // A 20-minute one still can, and that costs the longer cut nothing.
+    expect(opening(result)).toBe('10:00');
+  });
+
+  it('takes the soonest chair, not the first one', () => {
+    const result = run({
+      chairs: [chair({ barberId: 'marcus', sortOrder: 0 }), chair({ barberId: 'dre', sortOrder: 1 })],
+      walkUp: PROBE,
+      entries: [candidate({ id: 'held', barberId: 'marcus', durationMinutes: 60 })],
+    });
+
+    // Marcus is taken until 11:00; Dre is free now and that is the answer.
+    expect(opening(result)).toBe('10:00');
+  });
+
+  it('says there is no opening rather than inventing one', () => {
+    const result = run({ now: at('17:40'), walkUp: PROBE });
+
+    expect(result.walkUp).toEqual({ durationMinutes: 30, availableAt: null });
+  });
+
+  it('has no answer at all when nobody on today does that service', () => {
+    const result = run({
+      chairs: [chair({ serviceIds: [BEARD] })],
+      walkUp: PROBE,
+    });
+
+    // Null, not "no opening" — the shop is not full, it just does not sell this today.
+    expect(result.walkUp).toBeNull();
+  });
+
+  it('is absent unless the caller asks for it', () => {
+    expect(run({ entries: [candidate()] }).walkUp).toBeNull();
+  });
+});

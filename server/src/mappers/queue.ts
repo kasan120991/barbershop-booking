@@ -95,6 +95,18 @@ export function toPublicQueueBoardDto(board: QueueBoard): PublicQueueBoardDto {
   return {
     generatedAt: board.generatedAt.toISOString(),
     queueEnabled: board.queueEnabled,
+    /**
+     * Through the same `waitMinutes` helper as every other wait on the board, so it is
+     * floored at zero and rounded the same way. A screen that said "about -2 min" once
+     * would be remembered longer than one that never quotes at all.
+     */
+    walkUp:
+      board.walkUp === null
+        ? null
+        : {
+            availableAt: board.walkUp.availableAt?.toISOString() ?? null,
+            waitMinutes: waitMinutes(board.walkUp.availableAt, board.generatedAt),
+          },
     chairs: board.chairs.map((chair) => ({
       barberId: chair.barberId,
       displayName: chair.displayName,

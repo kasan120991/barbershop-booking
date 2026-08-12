@@ -65,7 +65,18 @@ export function useDeviceScreen() {
   const connected = useState<boolean>('device:connected', () => false);
   const settings = useState<ShopSettingsDto | null>('device:settings', () => null);
 
+  /**
+   * A ticking clock, so anything derived from an instant stays true between board pushes.
+   *
+   * Null until mounted, and not merely out of caution about hydration: a clock rendered
+   * on the server is already wrong by however long the response took, and this screen is
+   * on for twelve hours where that shows.
+   */
+  const now = useState<number | null>('device:now', () => null);
+
   let socket: DeviceSocket | null = null;
+  let tick: ReturnType<typeof setInterval> | undefined;
+  let poll: ReturnType<typeof setInterval> | undefined;
 
   const paired = computed(() => token.value !== null);
   const timezone = computed(() => settings.value?.timezone ?? 'America/New_York');
@@ -161,6 +172,58 @@ export function useDeviceScreen() {
     return `about ${formatDuration(minutes)}`;
   }
 
+  /**
+   * The next opening for somebody who has not joined — the kiosk's headline.
+   *
+   * Not derivable here, which is why the server sends it: `chairs[].freeFrom` is measured
+   * before the waiting line is allocated and would read "free now" with four people
+   * sitting in the room, and the entries' own waits belong to people already in the line.
+   */
+  const walkUp = computed(() => board.value?.walkUp ?? null);
+
+  /**
+   * Minutes until that opening, counted against a ticking clock rather than read off the
+   * board.
+   *
+   * The board is pushed on every mutation, so it is live with respect to *events* — but
+   * between two of them nothing changes except the time, and `waitMinutes` was measured
+   * at `generatedAt`. On a quiet afternoon that leaves a front door confidently saying
+   * "about 45 mins" for forty-five minutes. `availableAt` is an absolute instant, so the
+   * client can keep the number honest without asking the server anything.
+   *
+   * Falls back to the server's figure before the clock starts, which keeps the
+   * server-rendered number and the first client render identical.
+   */
+  const walkUpMinutes = computed(() => {
+    const opening = walkUp.value;
+    if (opening === null) return null;
+    if (opening.availableAt === null || now.value === null) return opening.waitMinutes;
+    const ms = new Date(opening.availableAt).getTime() - now.value;
+    return Math.max(0, Math.round(ms / 60_000));
+  });
+
+  /**
+   * Deliberately different words from `waitLabel`.
+   *
+   * That one talks to somebody who has joined and has a quote of their own; this one talks
+   * to somebody standing at the screen who has not picked a service yet, so the honest
+   * claim is about the shop's next opening rather than about their wait. The screen says
+   * "Next opening" above it for the same reason.
+   */
+  const nextOpeningLabel = computed(() => {
+    const minutes = walkUpMinutes.value;
+    if (minutes === null) return 'Ask at the desk';
+    if (minutes < 1) return 'No wait';
+    return `about ${formatDuration(minutes)}`;
+  });
+
+  /** "4 people ahead of you", or null at zero rather than "0 people ahead of you". */
+  const aheadLabel = computed(() => {
+    const count = waiting.value.length;
+    if (count === 0) return null;
+    return `${count} ${count === 1 ? 'person' : 'people'} ahead of you`;
+  });
+
   /** Instants render in the SHOP's zone, on every screen in the system. */
   function clock(iso: string | null): string {
     if (iso === null) return '';
@@ -208,12 +271,47 @@ export function useDeviceScreen() {
         if (value === null) return;
         open();
       });
+
+      /**
+       * Every fifteen seconds, not every second: the finest thing anything derived from
+       * this renders is a whole minute, and a screen that runs all day should not wake
+       * up 43,200 times to redraw the same digits.
+       */
+      now.value = Date.now();
+      tick = setInterval(() => {
+        now.value = Date.now();
+      }, 15_000);
+
+      /**
+       * The backstop under the socket, at a minute — the same one the staff app runs.
+       *
+       * NOT for a link that drops loudly: Socket.IO reconnects by itself, and the server
+       * sends the current board on connect, so that case is already covered. This is for
+       * one that dies quietly while reporting itself healthy, where a frozen board looks
+       * exactly like a quiet morning. It matters more on these two screens than anywhere
+       * else in the system, because the figure beside it now counts down against the
+       * clock: a stalled board no longer sits still and looks stale, it keeps confidently
+       * walking towards "No wait" while nothing behind it is true.
+       *
+       * Unconditional, deliberately. Gating it on `connected` would skip the exact
+       * failure it exists for — the socket that believes it is fine.
+       *
+       * Cheap, too: `loadBoard` returns early without a token, and a 401 sends a revoked
+       * screen back to pairing even when the socket is the thing that died.
+       */
+      poll = setInterval(() => {
+        void loadBoard();
+      }, 60_000);
     });
 
     onUnmounted(() => {
       socket?.disconnect();
       socket = null;
       connected.value = false;
+      if (tick !== undefined) clearInterval(tick);
+      tick = undefined;
+      if (poll !== undefined) clearInterval(poll);
+      poll = undefined;
     });
   }
 
@@ -230,7 +328,12 @@ export function useDeviceScreen() {
     waiting,
     chairs,
     longestWait,
+    now,
+    walkUp,
+    walkUpMinutes,
     waitLabel,
+    nextOpeningLabel,
+    aheadLabel,
     clock,
     deviceHeaders,
     loadToken,
