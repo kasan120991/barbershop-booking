@@ -67,6 +67,26 @@ export function useShopClock() {
     return Number(hour ?? '0') % 24;
   }
 
+  /**
+   * Minutes past the shop-local midnight, 0–1439. The calendar's vertical axis:
+   * a block sits where the wall clock puts it, which is what makes a 23- or
+   * 25-hour day render correctly without anyone doing DST arithmetic — the
+   * repeated hour overlays and the skipped hour is simply absent.
+   */
+  function minuteOfDay(iso: string | Date): number {
+    const date = typeof iso === 'string' ? new Date(iso) : iso;
+    const parts = new Intl.DateTimeFormat('en-US', {
+      timeZone: timezone.value,
+      hour12: false,
+      hour: '2-digit',
+      minute: '2-digit',
+    }).formatToParts(date);
+
+    const pick = (type: string) => Number(parts.find((part) => part.type === type)?.value ?? '0');
+    // `hour12: false` renders midnight as 24 in some engines.
+    return (pick('hour') % 24) * 60 + pick('minute');
+  }
+
   /** The shop-local `YYYY-MM-DD` an instant falls on — the day it belongs to here. */
   function localDate(iso: string | Date): string {
     const date = typeof iso === 'string' ? new Date(iso) : iso;
@@ -205,6 +225,7 @@ export function useShopClock() {
     ensureLoaded,
     clock,
     hourOf,
+    minuteOfDay,
     localDate,
     dayRange,
     rangeOfDays,
