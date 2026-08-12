@@ -43,8 +43,19 @@ export function useShopMode() {
     stored.value = next;
   }
 
-  /** Where "home" is depends on the hat. */
-  const homeRoute = computed(() => (mode.value === 'shop' ? '/calendar' : '/my-day'));
+  const homeRoute = computed(() => homeRouteFor(mode.value));
 
   return { mode, canSwitch, setMode, homeRoute };
+}
+
+/**
+ * Where "home" is depends on the hat.
+ *
+ * Exported as a function as well as a computed because the mode switch needs the home of
+ * the mode it is switching *to*, before the cookie it just wrote has propagated — reading
+ * the computed there returns the mode being left. It was a second hardcoded '/my-day',
+ * which is how the two came to disagree the moment one of them moved.
+ */
+export function homeRouteFor(mode: ShopMode): string {
+  return mode === 'shop' ? '/calendar' : '/today';
 }

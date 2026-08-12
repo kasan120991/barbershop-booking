@@ -18,6 +18,7 @@ import Clock from '@primeicons/vue/clock';
 import CreditCard from '@primeicons/vue/credit-card';
 import Dollar from '@primeicons/vue/dollar';
 import Home from '@primeicons/vue/home';
+import Sun from '@primeicons/vue/sun';
 import Tablet from '@primeicons/vue/tablet';
 import Users from '@primeicons/vue/users';
 import Wallet from '@primeicons/vue/wallet';
@@ -43,7 +44,13 @@ const SHOP_NAV: NavItem[] = [
 ];
 
 const CHAIR_NAV: NavItem[] = [
-  { label: 'My Day', to: '/my-day', icon: CalendarClock, adminOnly: false },
+  /**
+   * "Today" is the chair right now — free or not, who is next, what has been taken.
+   * "Schedule" is the book. They were one screen called My Day, and a barber signing in
+   * on a phone needed the first without scrolling past the second.
+   */
+  { label: 'Today', to: '/today', icon: Sun, adminOnly: false },
+  { label: 'Schedule', to: '/my-day', icon: CalendarClock, adminOnly: false },
   { label: 'Walk-in Queue', to: '/queue', icon: Users, adminOnly: false, showsQueueCount: true },
   { label: 'Take Payment', to: '/take-payment', icon: CreditCard, adminOnly: false },
   { label: 'Earnings', to: '/earnings', icon: Dollar, adminOnly: false },
@@ -60,6 +67,18 @@ export function useNavigation() {
   });
 
   return { items };
+}
+
+/**
+ * What to call a page, whichever hat is on.
+ *
+ * The top strip names the current screen from the nav model, and looking it up in only
+ * the *current* mode's list leaves the strip blank whenever the two disagree — an admin
+ * in shop mode opening a chair page, which is exactly what the mode switch does on the
+ * way through. Both lists, one answer.
+ */
+export function navLabelFor(path: string): string {
+  return [...SHOP_NAV, ...CHAIR_NAV].find((item) => item.to === path)?.label ?? '';
 }
 
 /** Every admin-only path, for the route guard. Derived so the two cannot drift. */

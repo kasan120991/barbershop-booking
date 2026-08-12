@@ -56,6 +56,6 @@ export default defineNuxtRouteMiddleware(async (to) => {
   // Hiding a nav link is presentation; this is the actual check. The API enforces
   // it a third time, because a client-side guard protects nothing on its own.
   if (auth.isSignedIn && !auth.isAdmin && ADMIN_ONLY_PATHS.includes(to.path)) {
-    return navigateTo('/my-day');
+    return navigateTo('/today');
   }
 });
