@@ -867,6 +867,60 @@ describe.skipIf(!reachable)('who may see what', () => {
 });
 
 /**
+ * The wall display trusts the order it is sent — it filters and truncates, it does not
+ * sort. So the array has to arrive in the same order as the numbers printed on it.
+ */
+describe.skipIf(!reachable)('the order the board is emitted in', () => {
+  beforeEach(reseed);
+
+  it('matches the positions it prints, even for two people who joined at once', async () => {
+    const token = await kioskToken();
+
+    // Same millisecond, which is the only case where the sort keys can disagree. Written
+    // directly rather than through the API, because two HTTP joins cannot collide exactly.
+    const joinedAt = new Date();
+    for (const [phone, firstName] of [
+      [ALICE, 'Alice'],
+      [BOB, 'Bob'],
+    ] as const) {
+      const client = await prisma.client.create({
+        data: { phoneE164: phone, firstName, lastName: 'Sametime' },
+      });
+      await prisma.queueEntry.create({
+        data: {
+          clientId: client.id,
+          barberId,
+          status: 'WAITING',
+          joinedAt,
+          durationMinutes: 30,
+          priceCentsTotal: 4500,
+          source: 'KIOSK',
+          services: {
+            create: {
+              serviceId: cutId,
+              priceCents: 4500,
+              durationMinutes: 30,
+              nameSnapshot: 'Haircut',
+            },
+          },
+        },
+      });
+    }
+
+    const board = await request(server)
+      .get('/api/queue/board')
+      .set(DEVICE_TOKEN_HEADER, token)
+      .expect(200);
+
+    const positions = board.body.board.entries
+      .filter((entry: { status: string }) => entry.status === 'WAITING')
+      .map((entry: { position: number }) => entry.position);
+
+    expect(positions).toEqual([...positions].sort((a: number, b: number) => a - b));
+  });
+});
+
+/**
  * The kiosk's quote for the basket somebody has actually picked.
  *
  * The board's own headline is measured against the shortest thing on the walk-in menu,

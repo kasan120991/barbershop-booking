@@ -104,7 +104,20 @@ const clockLabel = computed(() =>
  */
 const MAX_ROWS = 6;
 
-/** Called first — somebody being called needs to see it more than anyone else. */
+/**
+ * Called first — somebody being called needs to see it more than anyone else.
+ *
+ * Everyone after them is in the order they joined, and that is the order this column is
+ * in. It is deliberately NOT sorted by the time on each row, which will often run out of
+ * sequence down the glass: three people queued behind one barber all wait longer than
+ * somebody who arrived later and asked for a chair with a shorter line.
+ *
+ * Arrival order is the one that comes true. `callNext` hands a barber the next person by
+ * `priority DESC, joinedAt ASC` and the estimate gets no vote in it, so the number beside
+ * a name is what will actually happen; the time is a projection that moves as the board
+ * moves. Sorting a room's fairness record by a guess would also reshuffle the wall every
+ * time anybody joined — see the note on the heading below.
+ */
 const rows = computed(() => [...screen.called.value, ...screen.waiting.value]);
 
 const shown = computed(() => rows.value.slice(0, MAX_ROWS));
@@ -180,7 +193,17 @@ const overflow = computed(() => Math.max(0, rows.value.length - MAX_ROWS));
         </section>
 
         <section class="col">
-          <p class="col-label">Next Up</p>
+          <!--
+            "In Line", not "Next Up".
+
+            The column is the line in the order people joined it. "Next Up" claimed a
+            seating order it is not in and never was: the time on each row is that
+            person's own seat time, and a shorter cut can use a gap the longer one in
+            front of it could not — which is a good receptionist's decision, not
+            queue-jumping. Both numbers are true; they answer different questions, and
+            the heading now names the one the column is actually sorted by.
+          -->
+          <p class="col-label">In Line</p>
 
           <!-- Walk-ins off is not the same as nobody waiting, and an empty list would
                read as "no wait" to the one person it misleads most. -->

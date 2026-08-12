@@ -417,10 +417,20 @@ export async function getQueueBoard(query: QueueBoardQuery = {}) {
       include: { services: { select: { serviceId: true } } },
       orderBy: [{ sortOrder: 'asc' }, { displayName: 'asc' }],
     }),
+    /**
+     * The same three keys `boardOrder` sorts by, `id` included.
+     *
+     * `position` is computed with that tiebreak and this array is emitted in whatever
+     * order it arrives in, so two people who joined in the same millisecond could be
+     * numbered one way and printed the other. The staff page re-sorts by `position` and
+     * could never show it; the wall display trusts the array, and would have rendered
+     * `2, 1` down the glass. Fixed here rather than in a client, so the order matches the
+     * numbers for every consumer instead of for whichever one remembers to sort.
+     */
     prisma.queueEntry.findMany({
       where: { status: { in: ACTIVE } },
       include: ENTRY_INCLUDE,
-      orderBy: [{ priority: 'desc' }, { joinedAt: 'asc' }],
+      orderBy: [{ priority: 'desc' }, { joinedAt: 'asc' }, { id: 'asc' }],
     }),
     /**
      * What the kiosk's "next opening" is measured against.
