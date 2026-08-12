@@ -867,6 +867,156 @@ describe.skipIf(!reachable)('who may see what', () => {
 });
 
 /**
+ * Whose chair is whose.
+ *
+ * `requireUser` proved somebody was signed in and nothing about whose chair they were
+ * reaching into. Seating and finishing are acts on one barber's chair; everything else
+ * this file can do to an entry is a move on the shared line and stays open, which is the
+ * distinction these tests exist to hold in place.
+ */
+describe.skipIf(!reachable)('who may move whose chair', () => {
+  beforeEach(reseed);
+
+  /** Someone waiting for `barberId`, seated in that chair, without going through HTTP. */
+  async function seatSomeone(): Promise<string> {
+    const { entry } = await joinQueue({
+      client: { phone: ALICE, firstName: 'Alice', lastName: 'Anderson' },
+      serviceIds: [cutId],
+      barberId,
+      source: 'STAFF',
+    });
+    await updateQueueStatus(entry.id, 'CALLED');
+    await updateQueueStatus(entry.id, 'IN_CHAIR');
+    return entry.id;
+  }
+
+  const callNextAs = (staff: { cookies: string[]; csrfToken: string }, forBarber: string) =>
+    request(server)
+      .post('/api/queue/call-next')
+      .set('Cookie', staff.cookies)
+      .set(CSRF_HEADER, staff.csrfToken)
+      .send({ barberId: forBarber });
+
+  const setStatusAs = (
+    staff: { cookies: string[]; csrfToken: string },
+    entryId: string,
+    status: string,
+  ) =>
+    request(server)
+      .patch(`/api/queue/${entryId}/status`)
+      .set('Cookie', staff.cookies)
+      .set(CSRF_HEADER, staff.csrfToken)
+      .send({ status });
+
+  it('lets a barber call the next person into their own chair', async () => {
+    const staff = await session(BARBER_EMAIL);
+    await joinQueue({
+      client: { phone: ALICE, firstName: 'Alice' },
+      serviceIds: [cutId],
+      barberId,
+      source: 'STAFF',
+    });
+
+    await callNextAs(staff, barberId).expect(200);
+  });
+
+  it('refuses a barber calling somebody into another chair', async () => {
+    const staff = await session(BARBER_EMAIL);
+
+    const response = await callNextAs(staff, secondBarberId).expect(403);
+    expect(response.body.error.message).toMatch(/your own records/i);
+  });
+
+  it('still lets an admin work any chair — the desk runs the floor', async () => {
+    const admin = await session(ADMIN_EMAIL);
+    await joinQueue({
+      client: { phone: ALICE, firstName: 'Alice' },
+      serviceIds: [cutId],
+      barberId: secondBarberId,
+      source: 'STAFF',
+    });
+
+    await callNextAs(admin, secondBarberId).expect(200);
+  });
+
+  it('lets a barber finish the client in their own chair', async () => {
+    const staff = await session(BARBER_EMAIL);
+    const entryId = await seatSomeone();
+
+    await setStatusAs(staff, entryId, 'COMPLETED').expect(200);
+  });
+
+  it('refuses a barber finishing a client in somebody else’s chair, and changes nothing', async () => {
+    const other = await session(SECOND_BARBER_EMAIL);
+    const entryId = await seatSomeone();
+
+    const response = await setStatusAs(other, entryId, 'COMPLETED').expect(403);
+    expect(response.body.error.message).toMatch(/your own records/i);
+
+    // A guard that refuses after mutating is the failure this half of the test is for.
+    const after = await prisma.queueEntry.findUnique({ where: { id: entryId } });
+    expect(after?.status).toBe('IN_CHAIR');
+  });
+
+  it('refuses a barber seating somebody into another chair', async () => {
+    const other = await session(SECOND_BARBER_EMAIL);
+    const { entry } = await joinQueue({
+      client: { phone: ALICE, firstName: 'Alice' },
+      serviceIds: [cutId],
+      barberId,
+      source: 'STAFF',
+    });
+    await updateQueueStatus(entry.id, 'CALLED');
+
+    await setStatusAs(other, entry.id, 'IN_CHAIR').expect(403);
+  });
+
+  /**
+   * The line is still shared. Somebody who walked out is anybody's to remove, and this is
+   * the test that catches a later tidy-up locking the whole route.
+   */
+  it('lets a barber remove a walk-in attached to another chair', async () => {
+    const other = await session(SECOND_BARBER_EMAIL);
+    const { entry } = await joinQueue({
+      client: { phone: ALICE, firstName: 'Alice' },
+      serviceIds: [cutId],
+      barberId,
+      source: 'STAFF',
+    });
+
+    await setStatusAs(other, entry.id, 'CANCELLED').expect(200);
+  });
+
+  it('lets any barber no-show a walk-in nobody has claimed', async () => {
+    const other = await session(SECOND_BARBER_EMAIL);
+    const { entry } = await joinQueue({
+      client: { phone: ALICE, firstName: 'Alice' },
+      serviceIds: [cutId],
+      barberId: null,
+      source: 'KIOSK',
+    });
+
+    await setStatusAs(other, entry.id, 'NO_SHOW').expect(200);
+  });
+
+  /**
+   * The guard runs before the body is parsed, so a request naming no chair is refused
+   * rather than answered with a validation error. Pinned because it is a deliberate
+   * ordering, and the same one `POST /payments/cash` makes.
+   */
+  it('refuses a call-next that names no chair at all', async () => {
+    const staff = await session(BARBER_EMAIL);
+
+    await request(server)
+      .post('/api/queue/call-next')
+      .set('Cookie', staff.cookies)
+      .set(CSRF_HEADER, staff.csrfToken)
+      .send({})
+      .expect(403);
+  });
+});
+
+/**
  * The wall display trusts the order it is sent — it filters and truncates, it does not
  * sort. So the array has to arrive in the same order as the numbers printed on it.
  */

@@ -38,9 +38,29 @@ useHead({ title: 'Walk-in Queue — Francis Cutz' });
 
 const queue = useQueue();
 const shop = useShopClock();
+const auth = useAuthStore();
 const { board, loading, barbers: roster } = queue;
 const { notifyApiFailure, notifySuccess } = useNotify();
 const confirm = useConfirm();
+
+/**
+ * Whether this account may seat or finish somebody in a given chair.
+ *
+ * The server locks those two moves to the barber whose chair it is, so offering the
+ * buttons to anybody else is offering a 403. An admin passes for every chair — the desk
+ * runs the floor — and the owner holds both roles, so the shop tablet is unaffected.
+ *
+ * Everything else a row can do stays on every card: calling somebody up, bumping them,
+ * moving them to another barber, a no-show, removing a walk-in who left. The line is
+ * shared and those moves are deliberately not locked.
+ *
+ * `requestedBarberId` rather than `assignedBarberId`, and the difference matters here:
+ * it is the DTO's mirror of the stored `barberId` column, which is the one the server
+ * authorizes against. `assignedBarberId` is the estimator's projection of where somebody
+ * would go, which nobody has claimed yet.
+ */
+const mayWorkChair = (barberId: string | null): boolean =>
+  auth.isAdmin || (auth.user?.barberId != null && barberId === auth.user.barberId);
 
 const dialogOpen = ref(false);
 
@@ -399,7 +419,11 @@ function openMenu(event: Event, entry: QueueEntryDto) {
             </span>
             <div class="foot">
               <span class="until">Done ~{{ clock(chair.doneAt) }}</span>
+              <!-- Only the barber whose chair it is, or an admin. The card still says
+                   who is in it and until when — a shared board is for reading every
+                   chair, just not for acting on one that is not yours. -->
               <Button
+                v-if="mayWorkChair(chair.barberId)"
                 label="Finish"
                 variant="outlined"
                 severity="secondary"
@@ -414,6 +438,7 @@ function openMenu(event: Event, entry: QueueEntryDto) {
             <div class="foot">
               <span class="until">{{ chair.nextLabel }}</span>
               <Button
+                v-if="mayWorkChair(chair.barberId)"
                 label="Call Next"
                 :variant="chair.next ? undefined : 'text'"
                 :severity="chair.next ? undefined : 'secondary'"
@@ -503,8 +528,9 @@ function openMenu(event: Event, entry: QueueEntryDto) {
           </span>
 
           <span class="actions">
+            <!-- Seating is the same act as finishing: it means they are at that chair. -->
             <Button
-              v-if="entry.status === 'CALLED'"
+              v-if="entry.status === 'CALLED' && mayWorkChair(entry.requestedBarberId)"
               label="Seat"
               :loading="busy.has(entry.id)"
               @click="onSeat(entry)"

@@ -25,7 +25,7 @@ import {
   type QueueBoardDto,
   type WalkInQuoteDto,
 } from '@francis/shared';
-import { Router, type Response } from 'express';
+import { Router, type Request, type Response } from 'express';
 import { ipKeyGenerator } from 'express-rate-limit';
 
 import type { QueueStatus } from '../generated/prisma/enums.js';
@@ -33,7 +33,12 @@ import { ForbiddenError, UnauthenticatedError } from '../lib/errors.js';
 import { limiter } from '../lib/rate-limit.js';
 import { pathParam } from '../lib/http.js';
 import { toPublicQueueBoardDto, toQueueBoardDto, toWalkInQuoteDto } from '../mappers/queue.js';
-import { requireDevice, requireUser } from '../middleware/require-auth.js';
+import {
+  assertBarberSelfOrAdmin,
+  requireBarberSelfOrAdmin,
+  requireDevice,
+  requireUser,
+} from '../middleware/require-auth.js';
 import { auditContext, recordAudit } from '../services/audit.js';
 import {
   assignQueueBarber,
@@ -203,25 +208,78 @@ queueRouter.post('/queue', joinIpLimit, joinPhoneLimit, async (req, res) => {
 
 // --- Moving the line ---------------------------------------------------------
 
-queueRouter.post('/queue/call-next', requireUser, async (req, res) => {
-  const { barberId } = callNextRequestSchema.parse(req.body);
-  const result = await callNext(barberId);
+/**
+ * Whose chair the caller is asking to act on, read raw so the guard can run before the
+ * body is parsed. Same shape as `payments.ts` — an absent or non-string value becomes an
+ * empty id, which no barber matches, so a malformed body is refused rather than waved past.
+ */
+const bodyBarberId = (req: Request): string => {
+  const value: unknown = (req.body as { barberId?: unknown } | undefined)?.barberId;
+  return typeof value === 'string' ? value : '';
+};
 
-  await recordAudit(auditContext(req), {
-    action: 'queue.called',
-    entityType: 'QueueEntry',
-    entityId: result.entry.id,
-    after: { barberId, status: result.entry.status },
-  });
+/**
+ * Calling somebody up is an act on one barber's chair, so it belongs to that barber.
+ *
+ * `requireUser` alone proved somebody was signed in and nothing about whose chair they
+ * were reaching into — one barber could call the next client into another's chair, or
+ * finish a cut in it. The same gap was found and closed on appointments
+ * (`routes/booking.ts`); this is the queue's half of it. An admin still passes for anyone,
+ * which is what keeps the desk able to run the floor.
+ */
+queueRouter.post(
+  '/queue/call-next',
+  requireBarberSelfOrAdmin(bodyBarberId),
+  async (req, res) => {
+    const { barberId } = callNextRequestSchema.parse(req.body);
+    const result = await callNext(barberId);
 
-  respond(res, result);
-});
+    await recordAudit(auditContext(req), {
+      action: 'queue.called',
+      entityType: 'QueueEntry',
+      entityId: result.entry.id,
+      after: { barberId, status: result.entry.status },
+    });
 
+    respond(res, result);
+  },
+);
+
+/**
+ * The two moves that mean "this person is physically at my chair".
+ *
+ * Everything else this route can do — calling somebody up, putting them back in the line,
+ * a no-show, removing a walk-in who left — is a move on the shared line, and belongs in
+ * the same category as `/priority` below: any staff member may make it, and the audit row
+ * says who did. Locking those as well would stop a barber removing a walk-in who had been
+ * attached to another chair, and would half-apply `callSpecific` on the client, which
+ * assigns through the open route and then calls through this one.
+ */
+const CHAIR_TRANSITIONS = new Set<string>(['IN_CHAIR', 'COMPLETED']);
+
+/**
+ * Seating and finishing belong to the barber whose chair it is.
+ *
+ * The owner is on the stored row rather than in the request, so this is the `assert` form
+ * rather than middleware — the same shape `POST /appointments/:id/cancel` uses, and for
+ * the same reason. It costs no extra query: the snapshot the audit row already needs
+ * carries the barber.
+ *
+ * **An unclaimed walk-in is nobody's to own**, and cannot reach either locked transition
+ * anyway — `updateQueueStatus` refuses to seat somebody with no barber attached, and
+ * COMPLETED is only reachable from IN_CHAIR. The null check is written out regardless,
+ * because that refusal is a validation and this is an authorization; neither should be
+ * load-bearing for the other.
+ */
 queueRouter.patch('/queue/:entryId/status', requireUser, async (req, res) => {
   const entryId = pathParam(req, 'entryId');
   const { status } = updateQueueStatusRequestSchema.parse(req.body);
 
   const before = await snapshotBefore(entryId);
+  if (CHAIR_TRANSITIONS.has(status) && before.barberId !== null) {
+    assertBarberSelfOrAdmin(req, before.barberId);
+  }
+
   const result = await updateQueueStatus(entryId, status as QueueStatus);
 
   await recordAudit(auditContext(req), {
