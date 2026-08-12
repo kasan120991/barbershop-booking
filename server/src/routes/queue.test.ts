@@ -866,6 +866,148 @@ describe.skipIf(!reachable)('who may see what', () => {
   });
 });
 
+/**
+ * The kiosk's quote for the basket somebody has actually picked.
+ *
+ * The board's own headline is measured against the shortest thing on the walk-in menu,
+ * which is the right answer for a front door and the wrong one beside a barber's name
+ * once the customer has chosen. These are about the difference.
+ */
+describe.skipIf(!reachable)('quoting the picked services', () => {
+  beforeEach(reseed);
+
+  const quote = (token: string, serviceIds: string[]) =>
+    request(server)
+      .get(`/api/queue/quote?serviceIds=${serviceIds.join(',')}`)
+      .set(DEVICE_TOKEN_HEADER, token);
+
+  it('answers with one opening per barber who can do the whole basket', async () => {
+    const token = await kioskToken();
+
+    const cutOnly = await quote(token, [cutId]).expect(200);
+    expect(cutOnly.body.quote.barbers.map((row: { barberId: string }) => row.barberId).sort()).toEqual(
+      [barberId, secondBarberId].sort(),
+    );
+
+    // Only the first barber does beards, so the second drops out of the answer entirely
+    // rather than appearing with a null — he is not an option, not an unavailable one.
+    const both = await quote(token, [cutId, beardId]).expect(200);
+    expect(both.body.quote.barbers.map((row: { barberId: string }) => row.barberId)).toEqual([
+      barberId,
+    ]);
+  });
+
+  it('sums the duration from the service rows, not from the request', async () => {
+    const token = await kioskToken();
+
+    const response = await quote(token, [cutId, beardId]).expect(200);
+
+    // 30 + 15, computed server-side. The client never says what it thinks a cut takes.
+    expect(response.body.quote.durationMinutes).toBe(45);
+  });
+
+  it('echoes the services it answered about, so a stale answer can be spotted', async () => {
+    const token = await kioskToken();
+
+    const response = await quote(token, [cutId, beardId]).expect(200);
+
+    expect([...response.body.quote.serviceIds].sort()).toEqual([cutId, beardId].sort());
+  });
+
+  it('quotes "anyone" as the soonest of the barbers', async () => {
+    const token = await kioskToken();
+
+    const response = await quote(token, [cutId]).expect(200);
+
+    const times = response.body.quote.barbers
+      .map((row: { availableAt: string | null }) => row.availableAt)
+      .filter((value: string | null): value is string => value !== null)
+      .sort();
+    expect(response.body.quote.soonest.availableAt).toBe(times[0]);
+  });
+
+  /**
+   * The one that matters most. A probe that reserved would walk the whole line later
+   * every time somebody browsed the barber list, and nothing else here would catch it.
+   */
+  it('does not move the board by being read', async () => {
+    const token = await kioskToken();
+
+    await request(server)
+      .post('/api/queue')
+      .set(DEVICE_TOKEN_HEADER, token)
+      .send({ phone: ALICE, firstName: 'Alice', lastName: 'Anderson', serviceIds: [cutId] })
+      .expect(201);
+
+    const before = await prisma.queueEntry.findMany({
+      where: { client: { phoneE164: ALICE } },
+      select: { id: true, estimatedReadyAt: true, updatedAt: true },
+      orderBy: { id: 'asc' },
+    });
+
+    await quote(token, [cutId]).expect(200);
+    await quote(token, [cutId, beardId]).expect(200);
+    await quote(token, [cutId]).expect(200);
+
+    const after = await prisma.queueEntry.findMany({
+      where: { client: { phoneE164: ALICE } },
+      select: { id: true, estimatedReadyAt: true, updatedAt: true },
+      orderBy: { id: 'asc' },
+    });
+
+    expect(after).toEqual(before);
+  });
+
+  it('refuses a service the shop will not take off the street', async () => {
+    const token = await kioskToken();
+    await prisma.service.update({ where: { id: beardId }, data: { bookableWalkIn: false } });
+
+    try {
+      const response = await quote(token, [beardId]).expect(400);
+      // The same sentence `joinQueue` gives, because it is the same code.
+      expect(response.body.error.message).toMatch(/booked in advance/i);
+    } finally {
+      await prisma.service.update({ where: { id: beardId }, data: { bookableWalkIn: true } });
+    }
+  });
+
+  it('refuses a request with no services at all', async () => {
+    const token = await kioskToken();
+
+    await request(server)
+      .get('/api/queue/quote')
+      .set(DEVICE_TOKEN_HEADER, token)
+      .expect(400);
+  });
+
+  it('refuses an unpaired screen', async () => {
+    await request(server).get(`/api/queue/quote?serviceIds=${cutId}`).expect(401);
+  });
+
+  it('refuses the wall display, which has no form to quote for', async () => {
+    const display = await deviceToken('DISPLAY');
+
+    await quote(display, [cutId]).expect(403);
+  });
+
+  it('carries no name and no phone number', async () => {
+    const token = await kioskToken();
+
+    await request(server)
+      .post('/api/queue')
+      .set(DEVICE_TOKEN_HEADER, token)
+      .send({ phone: ALICE, firstName: 'Alice', lastName: 'Anderson', serviceIds: [cutId] })
+      .expect(201);
+
+    const response = await quote(token, [cutId]).expect(200);
+
+    const payload = JSON.stringify(response.body);
+    expect(payload).not.toContain(ALICE);
+    expect(payload).not.toContain('Anderson');
+    expect(payload).not.toContain('Qtest Marcus');
+  });
+});
+
 // --- Helpers -----------------------------------------------------------------
 
 function positionOf(board: Awaited<ReturnType<typeof getQueueBoard>>, entryId: string) {

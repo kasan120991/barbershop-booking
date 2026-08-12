@@ -20,6 +20,7 @@ import {
   type PublicQueueBoardDto,
   type QueueBoardDto,
   type QueueEntryDto,
+  type WalkInQuoteDto,
 } from '@francis/shared';
 
 import type { QueueBoard } from '../services/queue.js';
@@ -125,6 +126,41 @@ export function toPublicQueueBoardDto(board: QueueBoard): PublicQueueBoardDto {
         row.assignment?.estimatedReadyAt ?? null,
         board.generatedAt,
       ),
+    })),
+  };
+}
+
+/**
+ * The kiosk's quote for a basket somebody has actually chosen.
+ *
+ * Lives here rather than in the route so that every wait in the system goes through the
+ * one `waitMinutes` helper above and is floored and rounded identically — a quote that
+ * rounded differently from the board would have the same person told two numbers by two
+ * screens in the same room.
+ *
+ * Built from ids alone. There is no name in this shape: the kiosk already holds the
+ * roster from `/barbers` and looks each one up, and a second source for a barber's name
+ * is a second thing that can disagree with the first.
+ */
+export function toWalkInQuoteDto(
+  board: QueueBoard,
+  serviceIds: readonly string[],
+  durationMinutes: number,
+): WalkInQuoteDto {
+  const opening = (availableAt: Date | null) => ({
+    availableAt: availableAt?.toISOString() ?? null,
+    waitMinutes: waitMinutes(availableAt, board.generatedAt),
+  });
+
+  return {
+    generatedAt: board.generatedAt.toISOString(),
+    serviceIds: [...serviceIds],
+    durationMinutes,
+    // Null when no chair does the whole set — not the same as every chair being full.
+    soonest: board.walkUp === null ? null : opening(board.walkUp.availableAt),
+    barbers: (board.walkUp?.byChair ?? []).map((chair) => ({
+      barberId: chair.barberId,
+      ...opening(chair.availableAt),
     })),
   };
 }

@@ -5,8 +5,9 @@
  * `/queue/board` is what a paired kiosk or wall display reads, and is redacted by
  * construction in the mapper rather than by omission here.
  *
- * Joining is the only route in the file open to a device. Everything that moves the
- * line — calling, seating, reordering — is staff-only, and because `req.auth` is a
+ * A device may read — the board, and the kiosk's own quote — but joining is the only
+ * WRITE it can reach. Everything that moves the line — calling, seating, reordering — is
+ * staff-only, and because `req.auth` is a
  * discriminated union with no `roles` on the device arm, a kiosk token cannot satisfy
  * those guards even if someone puts one on the request. The compiler enforces it, not
  * a runtime check that could be forgotten.
@@ -19,8 +20,10 @@ import {
   normalizePhone,
   setQueuePriorityRequestSchema,
   updateQueueStatusRequestSchema,
+  walkInQuoteQuerySchema,
   type PublicQueueBoardDto,
   type QueueBoardDto,
+  type WalkInQuoteDto,
 } from '@francis/shared';
 import { Router, type Response } from 'express';
 import { ipKeyGenerator } from 'express-rate-limit';
@@ -29,7 +32,7 @@ import type { QueueStatus } from '../generated/prisma/enums.js';
 import { ForbiddenError, UnauthenticatedError } from '../lib/errors.js';
 import { limiter } from '../lib/rate-limit.js';
 import { pathParam } from '../lib/http.js';
-import { toPublicQueueBoardDto, toQueueBoardDto } from '../mappers/queue.js';
+import { toPublicQueueBoardDto, toQueueBoardDto, toWalkInQuoteDto } from '../mappers/queue.js';
 import { requireDevice, requireUser } from '../middleware/require-auth.js';
 import { auditContext, recordAudit } from '../services/audit.js';
 import {
@@ -38,6 +41,7 @@ import {
   getQueueBoard,
   getQueueEntry,
   joinQueue,
+  quoteWalkIn,
   setQueuePriority,
   updateQueueStatus,
   type QueueMutation,
@@ -81,11 +85,62 @@ const joinPhoneLimit = limiter({
   },
 });
 
+/**
+ * Keyed on the device, not the address.
+ *
+ * The whole shop shares one IP, and this fires from a customer's own taps — an address
+ * limit would let one tablet throttle the other. Generous on purpose: it exists for a
+ * client stuck in a loop, not for somebody who cannot make their mind up. It sits before
+ * the auth guard so an unpaired flood is limited too, which is why the key falls back to
+ * the address when there is no device on the request.
+ */
+const quoteLimit = limiter({
+  windowMs: 60_000,
+  limit: 120,
+  message: 'That screen is asking too quickly. It will catch up in a moment.',
+  keyGenerator: (req) => {
+    const auth = (req as { auth?: { kind?: string; deviceId?: string } }).auth;
+    return auth?.kind === 'device' && auth.deviceId !== undefined
+      ? `device:${auth.deviceId}`
+      : `ip:${ipKeyGenerator(req.ip ?? 'unknown')}`;
+  },
+});
+
 // --- Reads -------------------------------------------------------------------
 
 queueRouter.get('/queue', requireUser, async (_req, res) => {
   const body: QueueBoardDto = toQueueBoardDto(await getQueueBoard());
   res.json({ board: body });
+});
+
+/**
+ * What this customer's chosen services would actually cost them in waiting, per barber.
+ *
+ * Not a widened board and not a flag on `POST /queue`, and both for the same reason: the
+ * answer is a function of a selection only this tablet knows. The board is computed once
+ * and broadcast to every screen, so it could only ever quote a service picked on the
+ * customer's behalf — which is the shop-wide headline it already carries. And `POST
+ * /queue` is a write, audited, broadcast, and limited per phone, so browsing barbers
+ * would spend the join budget of a number they have not typed yet.
+ *
+ * `KIOSK` only. A wall display has no form and nothing to quote for.
+ */
+queueRouter.get('/queue/quote', quoteLimit, requireDevice('KIOSK'), async (req, res) => {
+  const raw = req.query as Record<string, unknown>;
+  // Parsed exactly as `GET /availability` does, so the two public reads that take a set
+  // of services accept the same thing.
+  const serviceIds =
+    typeof raw.serviceIds === 'string'
+      ? raw.serviceIds.split(',').filter(Boolean)
+      : Array.isArray(raw.serviceIds)
+        ? (raw.serviceIds as string[])
+        : [];
+
+  const query = walkInQuoteQuerySchema.parse({ serviceIds });
+  const { board, durationMinutes } = await quoteWalkIn(query.serviceIds);
+
+  const body: WalkInQuoteDto = toWalkInQuoteDto(board, query.serviceIds, durationMinutes);
+  res.json({ quote: body });
 });
 
 /** Kiosk and wall display. No type restriction — both read the same redacted board. */

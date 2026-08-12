@@ -107,6 +107,26 @@ export interface WalkUpOpening {
   durationMinutes: number;
   /** Null when nothing that long is left before closing. */
   availableAt: Date | null;
+  /**
+   * The same question asked of each chair separately, in `sortOrder`.
+   *
+   * `availableAt` above is the best of these, which is what a front door wants. A customer
+   * choosing between barbers wants the whole row: "Andre at 1:30, Rico now" is a different
+   * screen from "next opening, 0 mins", and the difference between two barbers is exactly
+   * what the shortest-of collapses away.
+   *
+   * Only chairs that can perform the probe's services appear, so the list is already the
+   * set of barbers worth offering. A chair with nothing long enough left today is present
+   * with a null `availableAt` — "this barber, not today" is an answer, and dropping the row
+   * would make a barber vanish from a picker with no explanation.
+   */
+  byChair: readonly WalkUpChairOpening[];
+}
+
+export interface WalkUpChairOpening {
+  barberId: string;
+  /** Null when nothing that long is left before closing in THIS chair. */
+  availableAt: Date | null;
 }
 
 export interface QueueEstimate {
@@ -314,14 +334,20 @@ export function assignQueue(input: AssignQueueInput): QueueEstimate {
     if (eligible.length === 0) return null;
 
     const durationMs = probe.durationMinutes * 60_000;
+    const byChair = eligible
+      .slice()
+      .sort((a, b) => a.sortOrder - b.sortOrder)
+      .map((chair) => ({ barberId: chair.barberId, availableAt: earliestFit(chair.free, durationMs) }));
+
+    // The shop's answer is the best chair's, which is why this is a `min` and not a sum or
+    // an average: one barber free at two o'clock is an opening at two o'clock.
     let availableAt: Date | null = null;
-    for (const chair of eligible) {
-      const start = earliestFit(chair.free, durationMs);
-      if (start === null) continue;
-      if (availableAt === null || start < availableAt) availableAt = start;
+    for (const chair of byChair) {
+      if (chair.availableAt === null) continue;
+      if (availableAt === null || chair.availableAt < availableAt) availableAt = chair.availableAt;
     }
 
-    return { durationMinutes: probe.durationMinutes, availableAt };
+    return { durationMinutes: probe.durationMinutes, availableAt, byChair };
   })();
 
   return {
@@ -357,6 +383,18 @@ const ENTRY_INCLUDE = {
 
 export interface QueueBoardQuery {
   now?: Date;
+  /**
+   * Replaces the default probe with the basket somebody has actually chosen.
+   *
+   * The default — the shortest thing the shop takes off the street — answers "the soonest
+   * we could start on anyone", which is the right question for a front door where nobody
+   * has picked anything. It is the wrong one the moment they have: a 60-minute cut does
+   * not fit where a 15-minute line-up does, and quoting the short one is a promise the
+   * chair cannot keep.
+   *
+   * `undefined` takes the default. An explicit `null` asks for no probe at all.
+   */
+  walkUp?: { durationMinutes: number; serviceIds: readonly string[] } | null;
 }
 
 /**
@@ -391,12 +429,17 @@ export async function getQueueBoard(query: QueueBoardQuery = {}) {
      * soonest we could start on anyone" — a defensible, explainable number for somebody
      * who has not chosen a service yet. `id` breaks the tie so two services of equal
      * length cannot make the board flicker between refreshes.
+     *
+     * Skipped entirely when the caller brought a basket of its own: there is nothing to
+     * choose on their behalf.
      */
-    prisma.service.findFirst({
-      where: { isActive: true, bookableWalkIn: true },
-      orderBy: [{ durationMinutes: 'asc' }, { id: 'asc' }],
-      select: { id: true, durationMinutes: true },
-    }),
+    query.walkUp === undefined
+      ? prisma.service.findFirst({
+          where: { isActive: true, bookableWalkIn: true },
+          orderBy: [{ durationMinutes: 'asc' }, { id: 'asc' }],
+          select: { id: true, durationMinutes: true },
+        })
+      : null,
   ]);
 
   const attachedIds = new Set(
@@ -459,12 +502,14 @@ export async function getQueueBoard(query: QueueBoardQuery = {}) {
     bufferMinutes: settings.bufferMinutes,
     chairs,
     walkUp:
-      shortestWalkIn === null
-        ? null
-        : {
-            durationMinutes: shortestWalkIn.durationMinutes,
-            serviceIds: [shortestWalkIn.id],
-          },
+      query.walkUp !== undefined
+        ? query.walkUp
+        : shortestWalkIn === null
+          ? null
+          : {
+              durationMinutes: shortestWalkIn.durationMinutes,
+              serviceIds: [shortestWalkIn.id],
+            },
     entries: entries.map((entry) => ({
       id: entry.id,
       barberId: entry.barberId,
@@ -502,6 +547,26 @@ export async function getQueueBoard(query: QueueBoardQuery = {}) {
 }
 
 export type QueueBoard = Awaited<ReturnType<typeof getQueueBoard>>;
+
+/**
+ * A real quote for a real basket: one opening per barber who can do the whole set.
+ *
+ * A read, and only a read. It deliberately does NOT go through `refreshQueueEstimates` —
+ * nothing is written and nothing is broadcast, because nobody has joined. Somebody
+ * standing at the kiosk comparing barbers must not renumber the line by looking at it.
+ *
+ * It also does not check `walkInQueueEnabled`. The numbers are true whether the shop is
+ * taking walk-ins or not, and the board already carries `queueEnabled` for the screen to
+ * act on; answering that one question in two places is how the two come to disagree.
+ */
+export async function quoteWalkIn(
+  serviceIds: readonly string[],
+  now: Date = new Date(),
+): Promise<{ board: QueueBoard; durationMinutes: number }> {
+  const { durationMinutes } = await resolveWalkInServices(serviceIds);
+  const board = await getQueueBoard({ now, walkUp: { durationMinutes, serviceIds } });
+  return { board, durationMinutes };
+}
 
 /**
  * Writes the estimate back onto the rows.
@@ -595,19 +660,28 @@ export interface JoinQueueInput {
   now?: Date;
 }
 
-export async function joinQueue(input: JoinQueueInput): Promise<QueueMutation> {
-  const now = input.now ?? new Date();
+/**
+ * What a set of service ids is actually worth: how long, how much, and whether the shop
+ * will take it off the street at all.
+ *
+ * Shared by the join and by the walk-up quote on purpose. The quote tells somebody at the
+ * kiosk when a barber could start *their* cut, so the two must agree to the minute about
+ * how long that cut is — and they can only be guaranteed to agree by being the same code.
+ *
+ * Duration and price are computed HERE from the Service rows, exactly as `createAppointment`
+ * does and for the same reason: a caller that could name its own duration could claim a
+ * chair for five minutes and sit in it for an hour.
+ */
+export async function resolveWalkInServices(serviceIds: readonly string[]): Promise<{
+  /** The rows themselves, so the join can snapshot their names and prices. */
+  services: { id: string; name: string; priceCents: number; durationMinutes: number }[];
+  durationMinutes: number;
+  priceCentsTotal: number;
+}> {
+  if (serviceIds.length === 0) throw new ValidationError('Choose at least one service.');
 
-  const settings = await prisma.shopSettings.findUnique({ where: { id: 1 } });
-  if (!settings) throw new NotFoundError('Shop settings have not been set up.');
-  if (!settings.walkInQueueEnabled) {
-    throw new ValidationError('The shop is not taking walk-ins right now.');
-  }
-
-  if (input.serviceIds.length === 0) throw new ValidationError('Choose at least one service.');
-
-  const services = await prisma.service.findMany({ where: { id: { in: input.serviceIds } } });
-  if (services.length !== new Set(input.serviceIds).size) {
+  const services = await prisma.service.findMany({ where: { id: { in: [...serviceIds] } } });
+  if (services.length !== new Set(serviceIds).size) {
     throw new ValidationError('One of those services no longer exists.');
   }
 
@@ -618,14 +692,25 @@ export async function joinQueue(input: JoinQueueInput): Promise<QueueMutation> {
   const notWalkIn = services.find((service) => !service.bookableWalkIn);
   if (notWalkIn) throw new ValidationError(`${notWalkIn.name} has to be booked in advance.`);
 
-  /**
-   * Computed here from the Service rows, exactly as `createAppointment` does, and for
-   * the same reason: a caller that could name its own duration could claim a chair for
-   * five minutes and sit in it for an hour.
-   */
   const durationMinutes = services.reduce((total, service) => total + service.durationMinutes, 0);
   const priceCentsTotal = services.reduce((total, service) => total + service.priceCents, 0);
   if (durationMinutes <= 0) throw new ValidationError('That service has no duration.');
+
+  return { services, durationMinutes, priceCentsTotal };
+}
+
+export async function joinQueue(input: JoinQueueInput): Promise<QueueMutation> {
+  const now = input.now ?? new Date();
+
+  const settings = await prisma.shopSettings.findUnique({ where: { id: 1 } });
+  if (!settings) throw new NotFoundError('Shop settings have not been set up.');
+  if (!settings.walkInQueueEnabled) {
+    throw new ValidationError('The shop is not taking walk-ins right now.');
+  }
+
+  const { services, durationMinutes, priceCentsTotal } = await resolveWalkInServices(
+    input.serviceIds,
+  );
 
   const barberId = input.barberId ?? null;
   if (barberId !== null) {

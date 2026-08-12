@@ -456,7 +456,11 @@ describe('the next opening for a walk-up', () => {
   it('says there is no opening rather than inventing one', () => {
     const result = run({ now: at('17:40'), walkUp: PROBE });
 
-    expect(result.walkUp).toEqual({ durationMinutes: 30, availableAt: null });
+    expect(result.walkUp).toEqual({
+      durationMinutes: 30,
+      availableAt: null,
+      byChair: [{ barberId: 'marcus', availableAt: null }],
+    });
   });
 
   it('has no answer at all when nobody on today does that service', () => {
@@ -471,5 +475,130 @@ describe('the next opening for a walk-up', () => {
 
   it('is absent unless the caller asks for it', () => {
     expect(run({ entries: [candidate()] }).walkUp).toBeNull();
+  });
+
+  /**
+   * The same probe, asked of each chair rather than of the shop.
+   *
+   * `availableAt` above is the best of these, which is the right answer for a front door
+   * and the wrong one for somebody choosing between people: it is precisely the
+   * difference between two barbers that a shortest-of collapses away.
+   */
+  describe('per barber', () => {
+    /** Each chair's own answer, as `barberId -> "HH:mm"`. */
+    function openings(result: ReturnType<typeof run>): Record<string, string | null> {
+      return Object.fromEntries(
+        (result.walkUp?.byChair ?? []).map((row) => [row.barberId, local(row.availableAt)]),
+      );
+    }
+
+    it('answers about the basket that was picked, not the shortest thing on the menu', () => {
+      const chairs = [
+        chair({
+          free: [
+            { start: at('10:00'), end: at('10:45') },
+            { start: at('12:00'), end: at('18:00') },
+          ],
+        }),
+      ];
+
+      // Same board, same instant, two baskets. A short cut fits the gap in front of the
+      // booking; an hour-long one does not and waits for the far side of it.
+      expect(opening(run({ chairs, walkUp: PROBE }))).toBe('10:00');
+      expect(opening(run({ chairs, walkUp: { durationMinutes: 60, serviceIds: [CUT] } }))).toBe(
+        '12:00',
+      );
+    });
+
+    it('gives every capable chair its own answer, not just the best one', () => {
+      const result = run({
+        chairs: [
+          chair({ barberId: 'marcus', sortOrder: 0 }),
+          chair({ barberId: 'dre', sortOrder: 1 }),
+        ],
+        walkUp: PROBE,
+        entries: [candidate({ id: 'held', barberId: 'marcus', durationMinutes: 60 })],
+      });
+
+      expect(openings(result)).toEqual({ marcus: '11:00', dre: '10:00' });
+      // And the shop's own figure is the better of the two, not an average of them.
+      expect(opening(result)).toBe('10:00');
+    });
+
+    it('keeps a chair with nothing left today rather than dropping it', () => {
+      const result = run({
+        now: at('17:40'),
+        chairs: [
+          chair({ barberId: 'marcus', sortOrder: 0 }),
+          chair({ barberId: 'late', sortOrder: 1, free: [{ start: at('10:00'), end: at('22:00') }] }),
+        ],
+        walkUp: PROBE,
+      });
+
+      // Present with a null, not absent. "This barber, not today" is an answer; a missing
+      // row is indistinguishable from a barber who does not do the work at all.
+      expect(openings(result)).toEqual({ marcus: null, late: '17:40' });
+    });
+
+    it('leaves out a chair that cannot do every service asked for', () => {
+      const result = run({
+        chairs: [
+          chair({ barberId: 'cuts-only', sortOrder: 0, serviceIds: [CUT] }),
+          chair({ barberId: 'does-both', sortOrder: 1 }),
+        ],
+        walkUp: { durationMinutes: 30, serviceIds: [CUT, BEARD] },
+      });
+
+      expect(Object.keys(openings(result))).toEqual(['does-both']);
+    });
+
+    it('lists chairs in board order, so the picker cannot reshuffle', () => {
+      const result = run({
+        chairs: [
+          chair({ barberId: 'third', sortOrder: 2 }),
+          chair({ barberId: 'first', sortOrder: 0 }),
+          chair({ barberId: 'second', sortOrder: 1 }),
+        ],
+        walkUp: PROBE,
+      });
+
+      expect(result.walkUp?.byChair.map((row) => row.barberId)).toEqual([
+        'first',
+        'second',
+        'third',
+      ]);
+    });
+
+    it('claims nothing per chair either, and leaves freeFrom alone', () => {
+      const chairs = [
+        chair({ barberId: 'marcus', sortOrder: 0 }),
+        chair({ barberId: 'dre', sortOrder: 1 }),
+      ];
+      const entries = [
+        candidate({ id: 'first', durationMinutes: 30, joinedAt: at('09:00') }),
+        candidate({ id: 'second', durationMinutes: 45, joinedAt: at('09:05') }),
+      ];
+
+      const asked = run({ chairs, walkUp: PROBE, entries });
+      const unasked = run({ chairs, entries });
+
+      expect(asked.assignments).toEqual(unasked.assignments);
+      expect(asked.chairs).toEqual(unasked.chairs);
+      // Pinned separately: `freeFrom` is snapshotted between the two passes and the probe
+      // runs after both, so reading one barber's opening must not move anybody's chair.
+      expect(asked.chairs.map((c) => local(c.freeFrom))).toEqual(
+        unasked.chairs.map((c) => local(c.freeFrom)),
+      );
+    });
+
+    it('answers the same thing twice', () => {
+      const input = {
+        chairs: [chair({ barberId: 'marcus' })],
+        walkUp: PROBE,
+        entries: [candidate({ id: 'held', durationMinutes: 60 })],
+      };
+
+      expect(run(input).walkUp).toEqual(run(input).walkUp);
+    });
   });
 });

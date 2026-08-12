@@ -151,6 +151,63 @@ export const publicQueueBoardDtoSchema = z.object({
 });
 export type PublicQueueBoardDto = z.infer<typeof publicQueueBoardDtoSchema>;
 
+// --- The kiosk's quote ---------------------------------------------------------
+
+/**
+ * A third shape, and deliberately not a fourth field on the public board.
+ *
+ * The board is one payload broadcast to every screen. This is an answer to one tablet's
+ * current selection — it changes with every tap, no other screen shares it, and the
+ * broadcast cannot see it, because `ClientToServerEvents` is empty on purpose.
+ *
+ * It carries ids and instants and nothing else: no names, no prices, no entries. There is
+ * nowhere in this shape for anything about a person to end up.
+ */
+
+export const walkInQuoteQuerySchema = z.object({
+  serviceIds: z
+    .array(z.string().min(1))
+    .min(1, { error: 'Choose at least one service.' }),
+});
+export type WalkInQuoteQuery = z.infer<typeof walkInQuoteQuerySchema>;
+
+/** `availableAt` null means nothing that long is left today; `waitMinutes` follows it. */
+export const walkInOpeningDtoSchema = z.object({
+  availableAt: z.iso.datetime().nullable(),
+  waitMinutes: z.int().nullable(),
+});
+export type WalkInOpeningDto = z.infer<typeof walkInOpeningDtoSchema>;
+
+export const walkInQuoteDtoSchema = z.object({
+  generatedAt: z.iso.datetime(),
+  /**
+   * Echoed back from the Service rows the answer was computed from.
+   *
+   * The kiosk fires a fresh quote on every tap, so two can be in flight for two different
+   * baskets at once. This is how it tells the answer it is holding from the one it asked
+   * for, and refuses to print a 30-minute figure under a 45-minute basket.
+   */
+  serviceIds: z.array(z.string()),
+  /** Summed server-side from those rows, never taken from the request. */
+  durationMinutes: z.int(),
+  /**
+   * The best of `barbers` — what the "Anyone" button is quoted.
+   *
+   * Null exactly when `barbers` is empty: nobody working today does the whole set, which
+   * is a different answer from "no opening left" and reads differently on the glass.
+   */
+  soonest: walkInOpeningDtoSchema.nullable(),
+  /**
+   * One row per barber who can perform every service asked for, in the roster's order.
+   *
+   * A barber with nothing long enough left today is present with a null `availableAt`
+   * rather than dropped — "this barber, not today" is an answer, and an absent row is
+   * indistinguishable from a barber who does not do the work at all.
+   */
+  barbers: z.array(walkInOpeningDtoSchema.extend({ barberId: z.string() })),
+});
+export type WalkInQuoteDto = z.infer<typeof walkInQuoteDtoSchema>;
+
 // --- Staff actions -----------------------------------------------------------
 
 export const updateQueueStatusRequestSchema = z.object({
