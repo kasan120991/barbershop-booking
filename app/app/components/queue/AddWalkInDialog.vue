@@ -337,18 +337,19 @@ async function onAdd() {
  * corner of the app is a trap for whoever reads it next.
  */
 .picker {
-  display: flex;
-  flex-direction: column;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(6.5rem, 1fr));
   gap: 0.375rem;
 }
 
 .pick {
   display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 0.75rem;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: center;
+  gap: 0.1rem;
   min-height: 44px;
-  padding: 0.5rem 0.75rem;
+  padding: 0.5rem 0.625rem;
   font: inherit;
   text-align: left;
   cursor: pointer;
