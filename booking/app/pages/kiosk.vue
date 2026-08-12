@@ -427,7 +427,7 @@ const myEntry = computed(
           @click="form.barberId = barber.id"
         >
           <span class="o-name">{{ barber.displayName }}</span>
-          <!-- Fully booked still chooses: the desk can squeeze somebody in, and the
+          <!-- "Not today" still chooses: the desk can squeeze somebody in, and the
                estimator records why the entry has no time rather than refusing it. -->
           <span class="o-meta fcb-num">{{ waitFor(barber.id) }}</span>
         </button>

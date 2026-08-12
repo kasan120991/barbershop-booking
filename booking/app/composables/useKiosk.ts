@@ -148,22 +148,27 @@ export function useKiosk() {
   const anyoneWait = computed(() => openingMinutes(quote.value?.soonest));
 
   /**
-   * A third vocabulary for a third audience.
+   * A third vocabulary for a third audience, and it names the quantity out loud.
    *
    * `waitLabel` talks to somebody already in the line and `nextOpeningLabel` to somebody
    * who has not picked anything. This one talks to somebody comparing people, and the
    * claim it makes is conditional: *if* you pick him, you sit down in this long.
    *
-   * It says the same two things as the front door on purpose — a customer who read "about
-   * 25 mins" on the idle screen should not have to learn a second phrasing four taps
-   * later. The third case is its own, because "Ask at the desk" is advice for somebody
-   * with nowhere else to go, and this reader has two other barbers to choose from.
+   * Which is why it says "25 mins wait" rather than the front door's "about 25 mins".
+   * Sitting under a barber's name with no heading of its own, a bare duration reads just
+   * as easily as how long *he* takes — the one misreading here that would cost the shop
+   * something, since it would push people towards whoever looked quickest at cutting.
+   *
+   * "Free now" is honest in a way it never was on a chair card: `freeFrom` is measured
+   * before the waiting line is allocated, and this is measured after it and against this
+   * basket. And "Not today" rather than "Ask at the desk" — that is advice for somebody
+   * with nowhere else to go, and this reader has two other barbers in front of them.
    */
   function pickLabel(minutes: number | null | undefined): string {
     if (minutes === undefined) return '';
-    if (minutes === null) return 'Fully booked';
-    if (minutes < 1) return 'No wait';
-    return `about ${formatDuration(minutes)}`;
+    if (minutes === null) return 'Not today';
+    if (minutes < 1) return 'Free now';
+    return `${formatDuration(minutes)} wait`;
   }
 
   async function join(input: {
