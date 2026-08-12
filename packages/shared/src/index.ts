@@ -6,6 +6,7 @@
  * here would ship a database client to the client.
  */
 
+export * from './calendar-lanes.js';
 export * from './contracts/index.js';
 export * from './duration.js';
 export * from './enums.js';
