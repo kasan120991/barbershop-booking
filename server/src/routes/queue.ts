@@ -93,21 +93,24 @@ const joinPhoneLimit = limiter({
 /**
  * Keyed on the device, not the address.
  *
- * The whole shop shares one IP, and this fires from a customer's own taps — an address
- * limit would let one tablet throttle the other. Generous on purpose: it exists for a
- * client stuck in a loop, not for somebody who cannot make their mind up. It sits before
- * the auth guard so an unpaired flood is limited too, which is why the key falls back to
- * the address when there is no device on the request.
+ * The whole shop shares one IP, and this fires from somebody's taps — the kiosk's, or the
+ * desk's on their behalf — so an address limit would let one screen throttle the other.
+ * Keyed on whoever is asking: the tablet by its device, a member of staff by their
+ * account. Generous on purpose: it exists for a client stuck in a loop, not for somebody
+ * who cannot make their mind up.
+ *
+ * It sits before the auth check so an unauthenticated flood is limited too, which is the
+ * only case that falls back to the address.
  */
 const quoteLimit = limiter({
   windowMs: 60_000,
   limit: 120,
   message: 'That screen is asking too quickly. It will catch up in a moment.',
   keyGenerator: (req) => {
-    const auth = (req as { auth?: { kind?: string; deviceId?: string } }).auth;
-    return auth?.kind === 'device' && auth.deviceId !== undefined
-      ? `device:${auth.deviceId}`
-      : `ip:${ipKeyGenerator(req.ip ?? 'unknown')}`;
+    const auth = (req as { auth?: { kind?: string; deviceId?: string; userId?: string } }).auth;
+    if (auth?.kind === 'device' && auth.deviceId !== undefined) return `device:${auth.deviceId}`;
+    if (auth?.kind === 'user' && auth.userId !== undefined) return `user:${auth.userId}`;
+    return `ip:${ipKeyGenerator(req.ip ?? 'unknown')}`;
   },
 });
 
@@ -128,9 +131,18 @@ queueRouter.get('/queue', requireUser, async (_req, res) => {
  * /queue` is a write, audited, broadcast, and limited per phone, so browsing barbers
  * would spend the join budget of a number they have not typed yet.
  *
- * `KIOSK` only. A wall display has no form and nothing to quote for.
+ * Staff and a kiosk, because they are doing the same job from opposite sides of the
+ * counter: somebody is standing there choosing a barber, and the question is what each
+ * one would cost them in waiting. A wall display is refused — it has no form and nothing
+ * to quote for. The check lives here rather than in middleware for the same reason
+ * `POST /queue` puts its there: this route serves staff, who are not devices at all.
  */
-queueRouter.get('/queue/quote', quoteLimit, requireDevice('KIOSK'), async (req, res) => {
+queueRouter.get('/queue/quote', quoteLimit, async (req, res) => {
+  if (!req.auth) throw new UnauthenticatedError('You must be signed in to do that.');
+  if (req.auth.kind === 'device' && req.auth.deviceType !== 'KIOSK') {
+    throw new ForbiddenError('This screen has nothing to quote for.');
+  }
+
   const raw = req.query as Record<string, unknown>;
   // Parsed exactly as `GET /availability` does, so the two public reads that take a set
   // of services accept the same thing.

@@ -7,7 +7,7 @@
  */
 
 import {
-  formatDuration,
+  walkInOpeningLabel,
   type BarberPublicDto,
   type PublicQueueBoardDto,
   type ServiceDto,
@@ -159,17 +159,12 @@ export function useKiosk() {
    * as easily as how long *he* takes — the one misreading here that would cost the shop
    * something, since it would push people towards whoever looked quickest at cutting.
    *
-   * "Free now" is honest in a way it never was on a chair card: `freeFrom` is measured
-   * before the waiting line is allocated, and this is measured after it and against this
-   * basket. And "Not today" rather than "Ask at the desk" — that is advice for somebody
-   * with nowhere else to go, and this reader has two other barbers in front of them.
+   * The three states themselves are `walkInOpeningLabel` in `shared`, because the staff
+   * dialog asks the same question about the same person from the other side of the
+   * counter and the two must not drift apart. Only the suffix is this screen's.
    */
-  function pickLabel(minutes: number | null | undefined): string {
-    if (minutes === undefined) return '';
-    if (minutes === null) return 'Not today';
-    if (minutes < 1) return 'Free now';
-    return `${formatDuration(minutes)} wait`;
-  }
+  const pickLabel = (minutes: number | null | undefined): string =>
+    walkInOpeningLabel(minutes, { suffix: 'wait' });
 
   async function join(input: {
     phone: string;

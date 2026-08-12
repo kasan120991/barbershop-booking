@@ -1188,6 +1188,22 @@ describe.skipIf(!reachable)('quoting the picked services', () => {
     await request(server).get(`/api/queue/quote?serviceIds=${cutId}`).expect(401);
   });
 
+  /**
+   * The desk asks the same question the tablet does, for somebody standing at the counter
+   * rather than at the door. It was device-only, so the staff dialog could not show a
+   * single one of these numbers.
+   */
+  it('answers the desk as well as the tablet', async () => {
+    const staff = await session(BARBER_EMAIL);
+
+    const response = await request(server)
+      .get(`/api/queue/quote?serviceIds=${cutId}`)
+      .set('Cookie', staff.cookies)
+      .expect(200);
+
+    expect(response.body.quote.barbers.length).toBeGreaterThan(0);
+  });
+
   it('refuses the wall display, which has no form to quote for', async () => {
     const display = await deviceToken('DISPLAY');
 

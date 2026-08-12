@@ -40,3 +40,33 @@ export function formatDuration(minutes: number): string {
 
   return `${plural(hours, 'hour')} ${plural(rest, 'min')}`;
 }
+
+/**
+ * What a walk-up quote says beside a barber's name, on both sides of the counter.
+ *
+ * The kiosk and the staff dialog ask the estimator the same question about the same
+ * person minutes apart, so the three answers have to be one decision rather than two
+ * copies waiting to drift — the reason this file exists at all.
+ *
+ * They phrase the number differently, and deliberately. The kiosk's label sits under a
+ * name with no heading of its own, where a bare duration reads as how long *he* takes, so
+ * it passes `suffix: 'wait'`. The desk's sits in a right-hand column under "Barber",
+ * where the word is redundant and the column is being scanned.
+ *
+ * Three outcomes, and they must stay three: `undefined` is "no answer for this person",
+ * `null` is "an answer, and it is not today", a number is a wait. Collapsing the first two
+ * labels a barber who is merely missing from the payload as fully booked.
+ */
+export function walkInOpeningLabel(
+  minutes: number | null | undefined,
+  options: { suffix?: string } = {},
+): string {
+  if (minutes === undefined) return '';
+  if (minutes === null) return 'Not today';
+  // Honest here in a way it is not on a chair card: this is measured after the waiting
+  // line is allocated, not before it.
+  if (minutes < 1) return 'Free now';
+
+  const spelled = formatDuration(minutes);
+  return options.suffix === undefined ? spelled : `${spelled} ${options.suffix}`;
+}

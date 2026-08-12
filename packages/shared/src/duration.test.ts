@@ -4,7 +4,7 @@
 
 import { describe, expect, it } from 'vitest';
 
-import { formatDuration } from './duration.js';
+import { formatDuration, walkInOpeningLabel } from './duration.js';
 
 describe('formatDuration', () => {
   it('leaves anything under an hour in minutes', () => {
@@ -50,5 +50,38 @@ describe('formatDuration', () => {
   it('rounds a fractional minute rather than printing it', () => {
     expect(formatDuration(45.4)).toBe('45 mins');
     expect(formatDuration(59.6)).toBe('1 hour');
+  });
+});
+
+/**
+ * One decision, two screens. The kiosk and the staff dialog quote the same person from
+ * opposite sides of the counter, so the three answers live here rather than in either.
+ */
+describe('walkInOpeningLabel', () => {
+  it('says nothing when there is no answer for this barber', () => {
+    // Not "fully booked" — an absent row means we were told nothing about them.
+    expect(walkInOpeningLabel(undefined)).toBe('');
+  });
+
+  it('separates "nothing left today" from "no answer"', () => {
+    expect(walkInOpeningLabel(null)).toBe('Not today');
+  });
+
+  it('reads as free under a minute', () => {
+    expect(walkInOpeningLabel(0)).toBe('Free now');
+    expect(walkInOpeningLabel(0.4)).toBe('Free now');
+  });
+
+  it('spells a wait the same way every other duration in the app is spelled', () => {
+    expect(walkInOpeningLabel(12)).toBe('12 mins');
+    expect(walkInOpeningLabel(70)).toBe('1 hour 10 mins');
+  });
+
+  /** The kiosk's label has no heading over it, so it names the quantity. The desk's does. */
+  it('takes a suffix for the screen that needs one', () => {
+    expect(walkInOpeningLabel(12, { suffix: 'wait' })).toBe('12 mins wait');
+    // The suffix never turns up on the two answers that are not a duration.
+    expect(walkInOpeningLabel(null, { suffix: 'wait' })).toBe('Not today');
+    expect(walkInOpeningLabel(0, { suffix: 'wait' })).toBe('Free now');
   });
 });
