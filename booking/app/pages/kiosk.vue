@@ -2,26 +2,29 @@
 /**
  * The tablet by the door.
  *
- * Three screens in one page: the board, joining, and a confirmation that takes itself
- * away. Idle shows the board because that is the question most people walked in with —
- * *how long?* — and answering it before asking anyone for their phone number is the
- * difference between a screen that helps and a form that blocks the door.
+ * Three screens in one page: the front door, joining, and a confirmation that takes
+ * itself away.
+ *
+ * The front door is deliberately not a queue board. The wall display already answers
+ * *who is in the chair* and *who is next*, at twice this type size, to the same room —
+ * repeating it here bought a second copy of a screen you can see from the same spot, and
+ * cost the one thing only this tablet can do. So it answers the other question, *how do
+ * I get in line*, with three things: the shop, one figure, one button.
+ *
+ * That figure is the shop's next opening rather than anybody's quoted wait, and the
+ * server computes it — see `walkUp` in the queue estimator. Nothing on the board could
+ * answer it: `freeFrom` is measured before the waiting line is allocated and would read
+ * "free now" to somebody standing beside four people who are waiting.
  *
  * Everything here is sized for a glance from standing height and a tap with a thumb.
  * Nothing is a table.
  *
- * The confirmation returns on its own after twenty seconds. An unattended screen must
- * never be left showing the last person's name and number to whoever walks up next —
- * and somebody who has just been told "you're fourth, about 40 minutes" has already
- * read everything they needed.
+ * The confirmation returns on its own after twenty seconds, and the form gives up after
+ * ninety. An unattended screen must never be left showing the last person's name and
+ * number to whoever walks up next.
  */
 
-import {
-  formatCents,
-  formatDuration,
-  joinQueueRequestSchema,
-  publicDisplayName,
-} from '@francis/shared';
+import { formatCents, formatDuration, joinQueueRequestSchema } from '@francis/shared';
 
 definePageMeta({ layout: 'kiosk' });
 
@@ -62,12 +65,26 @@ onMounted(async () => {
   if (kiosk.paired.value) await kiosk.loadBoard();
 });
 
-// --- The board ------------------------------------------------------------------
+// --- The front door ---------------------------------------------------------------
 
-// `waiting`, `called`, `chairs`, `longestWait`, `waitLabel` and `clock` are the shared
-// screen's, so the wall board and this tablet cannot come to different answers about the
-// same queue while facing each other across the room.
-const { waiting, called, chairs, longestWait, waitLabel, clock } = kiosk;
+// `waitLabel` is the shared screen's, so this tablet and the wall board cannot come to
+// different answers about the same person while facing each other across the room. The
+// board's own vocabulary — chairs, positions, the line — is gone from this page on
+// purpose; the wall says all of it, larger, to the same room.
+const { waitLabel } = kiosk;
+
+/**
+ * The line under the figure.
+ *
+ * Never "0 people ahead of you", and never a reassurance the figure above it contradicts:
+ * when there is no opening left at all, there is nothing encouraging to say, so it says
+ * nothing rather than inviting somebody in under a heading that just turned them away.
+ */
+const doorSub = computed(() => {
+  const ahead = kiosk.aheadLabel.value;
+  if (ahead !== null) return ahead;
+  return (kiosk.walkUp.value?.waitMinutes ?? null) === null ? null : 'Come on in.';
+});
 
 // --- Joining --------------------------------------------------------------------
 
@@ -243,64 +260,35 @@ const myEntry = computed(
     </p>
   </section>
 
-  <!-- The board ------------------------------------------------------------ -->
-  <section v-else-if="screen === 'board'" class="board">
-    <header class="board-head">
-      <div>
-        <h1>Walk-ins</h1>
-        <p class="lede">
-          <template v-if="!kiosk.walkInsOpen.value">
-            We are not taking walk-ins right now.
-          </template>
-          <template v-else-if="waiting.length === 0">
-            Nobody is waiting. Come on in.
-          </template>
-          <template v-else>
-            {{ waiting.length }} {{ waiting.length === 1 ? 'person' : 'people' }} waiting ·
-            longest about {{ formatDuration(longestWait) }}
-          </template>
-        </p>
-      </div>
-
-      <Button
-        v-if="kiosk.walkInsOpen.value"
-        label="Join the Queue"
-        size="large"
-        @click="startJoin"
-      />
-    </header>
-
-    <div v-if="chairs.length" class="chairs">
-      <article v-for="chair in chairs" :key="chair.barberId" class="chair">
-        <span class="chair-name">{{ chair.displayName }}</span>
-        <span v-if="chair.nowServing" class="chair-now">{{ chair.nowServing }}</span>
-        <span v-else class="chair-now free">Free</span>
-        <span class="chair-meta">
-          <template v-if="chair.nowServing">In the chair</template>
-          <template v-else-if="chair.freeFrom">Ready {{ clock(chair.freeFrom) }}</template>
-          <template v-else>Done for today</template>
-        </span>
-      </article>
+  <!-- The front door --------------------------------------------------------
+       The shop on one side, the question and the way in on the other. A wide
+       screen is not a tall one with more air, so this is a row until the glass
+       stops being wider than it is high. -->
+  <section v-else-if="screen === 'board'" class="door">
+    <div class="door-brand">
+      <span class="door-pole" aria-hidden="true" />
+      <!-- The shop's name is this screen's heading; the other two states have their
+           own, and a page with none reads as a fragment to anything but an eye. -->
+      <h1 class="door-word">Francis Cutz</h1>
     </div>
 
-    <div v-if="called.length || waiting.length" class="line">
-      <article v-for="entry in called" :key="entry.id" class="row called">
-        <span class="pos">Now</span>
-        <span class="who">{{ entry.displayName }}</span>
-        <span class="eta">Come on up</span>
-      </article>
+    <div class="door-ask">
+      <p v-if="!kiosk.walkInsOpen.value" class="door-closed">
+        We are not taking walk-ins right now.
+      </p>
 
-      <article v-for="entry in waiting" :key="entry.id" class="row">
-        <span class="pos fcb-num">{{ entry.position }}</span>
-        <span class="who">
-          {{ entry.displayName }}
-          <span v-if="entry.barberName" class="with">with {{ entry.barberName }}</span>
-        </span>
-        <span class="eta fcb-num">{{ waitLabel(entry.estimatedWaitMinutes) }}</span>
-      </article>
+      <template v-else>
+        <div class="door-wait">
+          <span class="door-label">Next Opening</span>
+          <!-- The shop's next opening, not this person's wait — they have not chosen a
+               service yet. Their own quote is made when they do. -->
+          <span class="door-figure fcb-num">{{ kiosk.nextOpeningLabel.value }}</span>
+          <span v-if="doorSub" class="door-sub">{{ doorSub }}</span>
+        </div>
+
+        <Button label="Join the Queue" class="door-join" @click="startJoin" />
+      </template>
     </div>
-
-    <p v-else class="empty">No one in line.</p>
   </section>
 
   <!-- Joining -------------------------------------------------------------- -->
@@ -515,134 +503,137 @@ h1 {
   text-align: center;
 }
 
-/* --- Board ------------------------------------------------------------------ */
+/* --- The front door ----------------------------------------------------------
+ *
+ * Sized in `vmin` clamps rather than the rem the rest of this page uses. The join
+ * form is filled in at arm's length with a thumb on the glass; this is read on the
+ * way past, and it has to hold its proportions on whatever the shop mounts. `vmin`
+ * is the short edge whichever way the tablet stands, which is what stops a wide
+ * panel rendering type sized for its width — the same reasoning behind the wall
+ * display's `--u`, one screen closer.
+ */
 
-.board {
+.door {
+  flex: 1;
+  min-height: 0;
   display: flex;
-  flex-direction: column;
-  gap: 1.75rem;
-}
-
-.board-head {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 1.5rem;
-  flex-wrap: wrap;
-}
-
-.chairs {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr));
-  gap: 0.75rem;
-}
-
-.chair {
-  display: flex;
-  flex-direction: column;
-  gap: 0.25rem;
-  border: 1px solid var(--fcb-rail-line);
-  border-radius: 12px;
-  background: var(--fcb-rail-raised);
-  padding: 1rem 1.125rem;
-  min-width: 0;
-}
-
-.chair-name {
-  font-size: 0.75rem;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
-  color: var(--fcb-rail-muted);
-}
-
-.chair-now {
-  font-family: var(--fcb-font-display);
-  font-size: 1.375rem;
-  font-weight: 650;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.chair-now.free {
-  color: var(--fcb-accent);
-}
-
-.chair-meta {
-  font-size: 0.875rem;
-  color: var(--fcb-rail-muted);
-}
-
-.line {
-  display: flex;
-  flex-direction: column;
-  gap: 0.5rem;
-}
-
-.row {
-  display: grid;
-  grid-template-columns: 3.5rem 1fr auto;
-  gap: 1rem;
   align-items: center;
-  border: 1px solid var(--fcb-rail-line);
-  border-radius: 12px;
-  background: var(--fcb-rail-raised);
-  padding: 0.875rem 1.125rem;
+  gap: clamp(2rem, 7vmin, 5rem);
 }
 
-.row.called {
-  border-color: var(--fcb-accent);
-  background: rgba(212, 162, 76, 0.12);
-}
-
-.pos {
-  font-family: var(--fcb-font-display);
-  font-size: 1.5rem;
-  font-weight: 700;
-  text-align: center;
-  color: var(--fcb-rail-muted);
-}
-
-.row.called .pos {
-  font-size: 1rem;
-  color: var(--fcb-accent);
-}
-
-.who {
-  font-size: 1.25rem;
-  font-weight: 600;
+.door-brand {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: clamp(0.75rem, 2.5vmin, 1.75rem);
   min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
-.with {
-  font-size: 0.9375rem;
-  font-weight: 400;
+/* The pole from `main.css` at hero scale. Not the shared class: that one is fixed
+   at 0.5rem and is worn by the top bar of this very screen. */
+.door-pole {
+  width: clamp(0.7rem, 2.2vmin, 1.5rem);
+  height: clamp(2.2rem, 7vmin, 4.75rem);
+  border-radius: 2px;
+  flex: none;
+  background: repeating-linear-gradient(
+    -45deg,
+    var(--fcb-accent) 0 clamp(0.35rem, 1.1vmin, 0.75rem),
+    var(--fcb-rail-raised) clamp(0.35rem, 1.1vmin, 0.75rem) clamp(0.7rem, 2.2vmin, 1.5rem)
+  );
+}
+
+.door-word {
+  font-family: var(--fcb-font-display);
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.22em;
+  line-height: 1.05;
+  font-size: clamp(1.5rem, 5vmin, 3.25rem);
+}
+
+.door-ask {
+  flex: 1.15;
+  display: flex;
+  flex-direction: column;
+  gap: clamp(1.5rem, 5vmin, 3.5rem);
+  min-width: 0;
+}
+
+.door-wait {
+  display: flex;
+  flex-direction: column;
+  gap: clamp(0.35rem, 1.2vmin, 0.75rem);
+  min-width: 0;
+}
+
+.door-label {
+  font-size: clamp(0.75rem, 1.6vmin, 1.0625rem);
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  font-weight: 600;
   color: var(--fcb-rail-muted);
-  margin-left: 0.5rem;
 }
 
-.eta {
-  font-size: 1.0625rem;
+.door-figure {
+  font-family: var(--fcb-font-display);
+  font-weight: 800;
+  letter-spacing: -0.03em;
+  line-height: 0.98;
+  font-size: clamp(2.25rem, 9vmin, 6rem);
+  text-wrap: balance;
+}
+
+.door-sub {
+  font-size: clamp(1rem, 2.4vmin, 1.625rem);
   color: var(--fcb-rail-muted);
-  white-space: nowrap;
+  line-height: 1.3;
 }
 
-.row.called .eta {
-  color: var(--fcb-accent);
-  font-weight: 650;
+/* The only thing there is to do on this screen, and it looks like it. */
+.door-join {
+  width: 100%;
+  justify-content: center;
+  font-size: clamp(1.25rem, 3.4vmin, 2.25rem);
+  font-weight: 700;
+  padding-block: clamp(0.9rem, 3.2vmin, 2rem);
+  border-radius: clamp(0.75rem, 2vmin, 1.25rem);
 }
 
-.empty {
+.door-closed {
   margin: 0;
   border: 1px dashed var(--fcb-rail-line);
-  border-radius: 12px;
-  padding: 2.5rem 1rem;
+  border-radius: clamp(0.75rem, 2vmin, 1.25rem);
+  padding: clamp(1.5rem, 5vmin, 3rem) clamp(1rem, 3vmin, 2rem);
   text-align: center;
   color: var(--fcb-rail-muted);
-  font-size: 1.0625rem;
+  font-size: clamp(1rem, 2.4vmin, 1.625rem);
+  line-height: 1.45;
+}
+
+/*
+ * Taller than it is wide — a tablet turned upright, or a narrow window. The row
+ * would divide that into two columns of nothing, so it stacks and centres.
+ */
+@media (max-aspect-ratio: 1 / 1) {
+  .door {
+    flex-direction: column;
+    justify-content: center;
+    text-align: center;
+    gap: clamp(2rem, 6vmin, 4rem);
+  }
+
+  .door-brand,
+  .door-ask {
+    flex: none;
+    width: 100%;
+    align-items: center;
+  }
+
+  .door-wait {
+    align-items: center;
+  }
 }
 
 /* --- Join ------------------------------------------------------------------- */
@@ -796,15 +787,6 @@ h1 {
 @media (max-width: 620px) {
   .row-2 {
     grid-template-columns: 1fr;
-  }
-
-  .row {
-    grid-template-columns: 2.75rem 1fr;
-    row-gap: 0.25rem;
-  }
-
-  .eta {
-    grid-column: 2;
   }
 }
 </style>
