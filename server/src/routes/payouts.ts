@@ -16,6 +16,7 @@ import {
   type PayoutDto,
 } from '@francis/shared';
 import { Router, type Request } from 'express';
+import { ipKeyGenerator } from 'express-rate-limit';
 
 import { UnauthenticatedError } from '../lib/errors.js';
 import { limiter } from '../lib/rate-limit.js';
@@ -35,13 +36,29 @@ export const payoutRouter: Router = Router();
 const barberIdOf = (req: Request): string => String(req.params.barberId ?? '');
 
 /**
- * Balance reads hit Stripe live, and the Earnings page asks on every visit. This caps a
- * stuck client without getting in the way of somebody checking twice.
+ * Balance reads hit Stripe live, so this caps a stuck client without getting in the way
+ * of somebody checking twice.
+ *
+ * Keyed on the chair being read, not the address asking. Every phone and tablet in the
+ * shop shares one public IP, so the default key made sixty-per-five-minutes a *shop-wide*
+ * budget — one barber refreshing could lock the rest of the floor out of their own
+ * money. It was sized for a page somebody opens occasionally; `/today` is the screen a
+ * barber opens between cuts, which is what turned a generous cap into a shared one.
+ *
+ * Same reasoning as the kiosk's quote limiter keying on the device: behind one router,
+ * an address identifies the building rather than the person.
  */
 const balanceLimit = limiter({
   windowMs: 5 * 60 * 1000,
   limit: 60,
   message: 'Too many requests. Wait a moment and try again.',
+  keyGenerator: (req) => {
+    const barberId = barberIdOf(req);
+    // The IP fallback goes through `ipKeyGenerator`, which normalises IPv6 to its /56
+    // prefix — keying on the raw address would hand one person a bucket per address in
+    // their own allocation.
+    return barberId === '' ? `ip:${ipKeyGenerator(req.ip ?? 'unknown')}` : `barber:${barberId}`;
+  },
 });
 
 /** Moving money deserves a tighter one than reading about it. */
