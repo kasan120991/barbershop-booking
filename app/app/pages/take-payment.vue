@@ -28,9 +28,14 @@ useHead({ title: 'Take Payment — Francis Cutz' });
 
 const auth = useAuthStore();
 const payments = usePayments();
+const shop = useShopClock();
 const { notifySuccess, notifyApiFailure } = useNotify();
 
 const barberId = computed(() => auth.user?.barberId ?? null);
+
+// Before the first render, not alongside it: the finish times below are read off the
+// shop's clock, and the fallback zone would state the wrong hour for a shop further west.
+await shop.ensureLoaded();
 
 if (barberId.value !== null) {
   await payments.refresh(barberId.value);
@@ -97,10 +102,10 @@ const totalCents = computed(() => (selected.value?.amountCents ?? 0) + tipCents.
 
 function finishedLabel(ticket: PayableTicketDto): string {
   if (ticket.finishedAt === null) return 'In the chair';
-  return `Finished ${new Date(ticket.finishedAt).toLocaleTimeString('en-US', {
-    hour: 'numeric',
-    minute: '2-digit',
-  })}`;
+  // The shop's clock, like every other time in the app. This formatted the instant in
+  // the browser's zone, so the same cut read as a different hour on a barber's own
+  // laptop set to somewhere else — and a payment screen is where that matters most.
+  return `Finished ${shop.clock(ticket.finishedAt)}`;
 }
 
 /**

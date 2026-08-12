@@ -32,7 +32,12 @@ import {
 const props = defineProps<{ barberId: string }>();
 
 const rent = useRent();
+const shop = useShopClock();
 const { notifySuccess, notifyApiFailure } = useNotify();
+
+// Not awaited — this is a panel inside a page, and the date it needs is only read when
+// the plan dialog opens. See the same note in `ClientLookupFields.vue`.
+void shop.ensureLoaded();
 
 const plan = computed(() => rent.overview.value?.plan ?? null);
 const charges = computed(() => rent.overview.value?.charges ?? []);
@@ -208,7 +213,9 @@ watch(planOpen, (open) => {
   form.amount = current ? formatCentsPlain(current.amountCents) : '';
   form.cadence = current?.cadence ?? RENT_CADENCE.WEEKLY;
   form.anchorDay = current?.anchorDay ?? 1;
-  form.startDate = current?.startDate ?? new Date().toISOString().slice(0, 10);
+  // `toISOString()` is UTC, so between eight in the evening and midnight the shop was
+  // offered tomorrow's date as the day the rent starts.
+  form.startDate = current?.startDate ?? shop.today();
 });
 
 async function savePlan() {

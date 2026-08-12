@@ -43,6 +43,12 @@ const emit = defineEmits<{
 }>();
 
 const api = useApi();
+const shop = useShopClock();
+
+// Not awaited: this is a field inside somebody else's form, and a top-level await here
+// would make every parent that renders it async. The zone is only needed once a lookup
+// has come back with a date to name, by which time it has long arrived.
+void shop.ensureLoaded();
 
 const prefix = computed(() => props.idPrefix ?? 'cl');
 
@@ -136,9 +142,11 @@ function differentNumber() {
 /**
  * "3 days ago" up close, a date once that stops being useful.
  *
- * Relative to the browser's clock rather than the shop's, unlike everything on the queue
- * and the calendar — this is how long ago something happened, not what time of day it is,
- * and no timezone changes the answer by enough to matter at this precision.
+ * The elapsed part is measured against the browser's clock and stays that way: how long
+ * ago something happened is the same span of time in every zone, and no offset changes it
+ * by enough to matter at day precision. The date it falls back to is a different claim —
+ * it names a day, and which day an instant belongs to is the shop's answer, so that half
+ * goes through `useShopClock` like every other date in the app.
  */
 const lastVisit = computed(() => {
   const iso = confirmed.value?.lastVisitAt ?? found.value?.lastVisitAt ?? null;
@@ -149,8 +157,8 @@ const lastVisit = computed(() => {
   if (days === 1) return 'yesterday';
   if (days < 21) return `${String(days)} days ago`;
 
-  return new Date(iso).toLocaleDateString('en-US', {
-    day: 'numeric',
+  return shop.longDate(shop.localDate(iso), {
+    weekday: undefined,
     month: 'short',
     year: 'numeric',
   });

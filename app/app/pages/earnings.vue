@@ -40,6 +40,10 @@ const router = useRouter();
 const { notifySuccess, notifyApiFailure } = useNotify();
 
 const barberId = computed(() => auth.user?.barberId ?? null);
+const shop = useShopClock();
+
+// The payout list names days, and which day an instant falls on is the shop's answer.
+await shop.ensureLoaded();
 
 if (barberId.value !== null) {
   await connect.refresh(barberId.value);
@@ -194,22 +198,18 @@ const todayLabel = computed(() => {
   const iso = payouts.summary.value?.date;
   if (iso === undefined || iso === '') return 'today';
 
-  // The server already resolved this in the shop's timezone; parse it as a plain date so
-  // the browser's own zone cannot shift it back a day.
-  const [year, month, day] = iso.split('-').map(Number);
-  if (year === undefined || month === undefined || day === undefined) return 'today';
-
-  return new Date(year, month - 1, day).toLocaleDateString('en-US', {
-    weekday: 'long',
-    day: 'numeric',
-    month: 'long',
-  });
+  // The server already resolved this in the shop's timezone, so it is a plain date and
+  // `longDate` renders it as one — the browser's own zone cannot shift it back a day.
+  return shop.longDate(iso);
 });
 
 function payoutLine(payout: PayoutDto): string {
   const kind = payout.type === 'INSTANT' ? 'Instant' : 'Daily payout';
-  const when = new Date(payout.createdAt).toLocaleDateString('en-US', {
-    day: 'numeric',
+  // `createdAt` is an instant, not a plain date like `summary.date` above, so it has to
+  // be resolved to the shop's day before it is named. Formatted in the browser's zone, a
+  // cash-out taken late in the evening was listed under the following day.
+  const when = shop.longDate(shop.localDate(payout.createdAt), {
+    weekday: undefined,
     month: 'short',
   });
   return `${kind} · ${when}`;
