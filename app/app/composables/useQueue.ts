@@ -19,6 +19,7 @@ import type {
   QueueEntryDto,
   ServiceDto,
   ShopSettingsDto,
+  WalkInQuoteDto,
 } from '@francis/shared';
 
 export function useQueue() {
@@ -31,6 +32,7 @@ export function useQueue() {
   const services = useState<ServiceDto[]>('queue:services', () => []);
   const barbers = useState<BarberStaffDto[]>('queue:barbers', () => []);
   const settings = useState<ShopSettingsDto | null>('queue:settings', () => null);
+  const quote = useState<WalkInQuoteDto | null>('queue:quote', () => null);
 
   /**
    * `quiet` is for the poll. A failed background refresh must not raise a toast every
@@ -71,6 +73,90 @@ export function useQueue() {
     barbers.value = barberRes.barbers;
     settings.value = settingsRes.settings;
   }
+
+  // --- What each barber would cost this customer in waiting --------------------
+
+  /**
+   * Guards against the slower of two answers landing last.
+   *
+   * The desk taps Cut, then Beard, and two requests are in flight for two different
+   * baskets. Without this the first can arrive second and put a thirty-minute figure
+   * beside a name under a forty-five-minute basket — a wrong number, which is worse than
+   * no number at all.
+   */
+  let asked = 0;
+
+  /**
+   * The same question the kiosk asks, from behind the counter instead of in front of it.
+   *
+   * A courtesy: nothing here can stop somebody being added to the line, so a failure
+   * leaves the labels blank rather than raising anything.
+   */
+  async function loadQuote(serviceIds: string[]): Promise<void> {
+    if (serviceIds.length === 0) {
+      clearQuote();
+      return;
+    }
+
+    const mine = (asked += 1);
+    try {
+      const response = await api<{ quote: WalkInQuoteDto }>('/queue/quote', {
+        query: { serviceIds: serviceIds.join(',') },
+      });
+      if (mine !== asked) return;
+      quote.value = response.quote;
+    } catch {
+      if (mine !== asked) return;
+      quote.value = null;
+    }
+  }
+
+  function clearQuote(): void {
+    asked += 1;
+    quote.value = null;
+  }
+
+  /**
+   * True only when the answer on hand was computed for exactly this basket.
+   *
+   * The sequence number above orders our own requests; this catches everything else — a
+   * refetch triggered by the line moving while somebody is mid-tap, a dialog reopened on
+   * a stale answer. It is why the server echoes back the services it answered about.
+   */
+  function quoteMatches(serviceIds: string[]): boolean {
+    const held = quote.value;
+    if (held === null || held.serviceIds.length !== serviceIds.length) return false;
+    const wanted = [...serviceIds].sort();
+    return [...held.serviceIds].sort().every((id, index) => id === wanted[index]);
+  }
+
+  /**
+   * Three outcomes, and they must stay three: `undefined` is "no answer for this barber",
+   * `null` is "an answer, and it is not today", a number is a wait. Collapsing the first
+   * two labels a barber who is merely missing from the payload as fully booked.
+   *
+   * Measured against the board's clock rather than the browser's, like every other figure
+   * on this side — see the note at the top of `pages/queue.vue`.
+   */
+  function openingMinutes(
+    opening: { availableAt: string | null; waitMinutes: number | null } | null | undefined,
+  ): number | null | undefined {
+    if (opening === null || opening === undefined) return undefined;
+    if (opening.availableAt === null) return null;
+
+    const asOf = board.value === null ? null : new Date(board.value.generatedAt).getTime();
+    if (asOf === null) return opening.waitMinutes;
+    return Math.max(0, Math.round((new Date(opening.availableAt).getTime() - asOf) / 60_000));
+  }
+
+  const barberWaits = computed(
+    () =>
+      new Map(
+        (quote.value?.barbers ?? []).map((row) => [row.barberId, openingMinutes(row)] as const),
+      ),
+  );
+
+  const anyoneWait = computed(() => openingMinutes(quote.value?.soonest));
 
   async function send<T extends Record<string, unknown>>(
     path: string,
@@ -144,6 +230,12 @@ export function useQueue() {
     services,
     barbers,
     settings,
+    quote,
+    loadQuote,
+    clearQuote,
+    quoteMatches,
+    barberWaits,
+    anyoneWait,
     waitingCount,
     refresh,
     ensureLoaded,
