@@ -151,10 +151,6 @@ export function useDeviceScreen() {
 
   // --- Reading the board ----------------------------------------------------------
 
-  const called = computed(
-    () => board.value?.entries.filter((entry) => entry.status === 'CALLED') ?? [],
-  );
-
   const waiting = computed(
     () => board.value?.entries.filter((entry) => entry.status === 'WAITING') ?? [],
   );
@@ -324,7 +320,6 @@ export function useDeviceScreen() {
     settings,
     timezone,
     walkInsOpen,
-    called,
     waiting,
     chairs,
     longestWait,

@@ -105,10 +105,14 @@ const clockLabel = computed(() =>
 const MAX_ROWS = 6;
 
 /**
- * Called first — somebody being called needs to see it more than anyone else.
+ * Everybody still waiting, in the order they joined.
  *
- * Everyone after them is in the order they joined, and that is the order this column is
- * in. It is deliberately NOT sorted by the time on each row, which will often run out of
+ * Somebody who has been called is NOT here: they are named on the chair they were called
+ * to, under the barber they are walking towards, which says more than a row in this
+ * column ever could. Carrying them in both places put one person on the screen twice, and
+ * the second copy reads as a row nobody cleared.
+ *
+ * It is deliberately NOT sorted by the time on each row, which will often run out of
  * sequence down the glass: three people queued behind one barber all wait longer than
  * somebody who arrived later and asked for a chair with a shorter line.
  *
@@ -118,7 +122,7 @@ const MAX_ROWS = 6;
  * moves. Sorting a room's fairness record by a guess would also reshuffle the wall every
  * time anybody joined — see the note on the heading below.
  */
-const rows = computed(() => [...screen.called.value, ...screen.waiting.value]);
+const rows = computed(() => screen.waiting.value);
 
 const shown = computed(() => rows.value.slice(0, MAX_ROWS));
 const overflow = computed(() => Math.max(0, rows.value.length - MAX_ROWS));
@@ -228,19 +232,10 @@ const overflow = computed(() => Math.max(0, rows.value.length - MAX_ROWS));
 
           <template v-else>
             <div class="line-stack">
-              <article
-                v-for="entry in shown"
-                :key="entry.id"
-                class="row"
-                :class="{ called: entry.status === 'CALLED' }"
-              >
-                <span v-if="entry.status === 'CALLED'" class="pos">NOW</span>
-                <span v-else class="pos fcb-num">{{ entry.position }}</span>
-
+              <article v-for="entry in shown" :key="entry.id" class="row">
+                <span class="pos fcb-num">{{ entry.position }}</span>
                 <span class="who">{{ entry.displayName }}</span>
-
-                <span v-if="entry.status === 'CALLED'" class="eta">Come on up</span>
-                <span v-else class="eta fcb-num">
+                <span class="eta fcb-num">
                   {{ screen.waitLabel(entry.estimatedWaitMinutes) }}
                 </span>
               </article>
@@ -497,11 +492,6 @@ const overflow = computed(() => Math.max(0, rows.value.length - MAX_ROWS));
   line-height: 1;
 }
 
-.row.called .pos {
-  font-size: calc(1.4 * var(--u));
-  color: var(--fcb-accent);
-}
-
 .who {
   font-size: calc(2.4 * var(--u));
   font-weight: 600;
@@ -511,19 +501,10 @@ const overflow = computed(() => Math.max(0, rows.value.length - MAX_ROWS));
   white-space: nowrap;
 }
 
-.row.called .who {
-  color: var(--fcb-accent);
-}
-
 .eta {
   font-size: calc(1.8 * var(--u));
   color: var(--fcb-rail-muted);
   white-space: nowrap;
-}
-
-.row.called .eta {
-  color: var(--fcb-accent);
-  font-weight: 650;
 }
 
 .more {
