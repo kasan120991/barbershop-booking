@@ -161,6 +161,37 @@ export function useDeviceScreen() {
     return `about ${formatDuration(minutes)}`;
   }
 
+  /**
+   * The next opening for somebody who has not joined — the kiosk's headline.
+   *
+   * Not derivable here, which is why the server sends it: `chairs[].freeFrom` is measured
+   * before the waiting line is allocated and would read "free now" with four people
+   * sitting in the room, and the entries' own waits belong to people already in the line.
+   */
+  const walkUp = computed(() => board.value?.walkUp ?? null);
+
+  /**
+   * Deliberately different words from `waitLabel`.
+   *
+   * That one talks to somebody who has joined and has a quote of their own; this one talks
+   * to somebody standing at the screen who has not picked a service yet, so the honest
+   * claim is about the shop's next opening rather than about their wait. The screen says
+   * "Next opening" above it for the same reason.
+   */
+  const nextOpeningLabel = computed(() => {
+    const minutes = walkUp.value?.waitMinutes ?? null;
+    if (minutes === null) return 'Ask at the desk';
+    if (minutes < 1) return 'No wait';
+    return `about ${formatDuration(minutes)}`;
+  });
+
+  /** "4 people ahead of you", or null at zero rather than "0 people ahead of you". */
+  const aheadLabel = computed(() => {
+    const count = waiting.value.length;
+    if (count === 0) return null;
+    return `${count} ${count === 1 ? 'person' : 'people'} ahead of you`;
+  });
+
   /** Instants render in the SHOP's zone, on every screen in the system. */
   function clock(iso: string | null): string {
     if (iso === null) return '';
@@ -230,7 +261,10 @@ export function useDeviceScreen() {
     waiting,
     chairs,
     longestWait,
+    walkUp,
     waitLabel,
+    nextOpeningLabel,
+    aheadLabel,
     clock,
     deviceHeaders,
     loadToken,

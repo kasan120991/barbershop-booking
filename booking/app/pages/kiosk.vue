@@ -71,7 +71,7 @@ const { waiting, called, chairs, longestWait, waitLabel, clock } = kiosk;
 
 // --- Joining --------------------------------------------------------------------
 
-function startJoin() {
+function clearForm() {
   Object.assign(form, {
     firstName: '',
     lastName: '',
@@ -81,7 +81,42 @@ function startJoin() {
   });
   joinError.value = null;
   fieldErrors.value = {};
+}
+
+function startJoin() {
+  clearForm();
   screen.value = 'join';
+  touchIdleTimer();
+}
+
+/**
+ * The join screen gives up on its own, the same way the confirmation does.
+ *
+ * The case it covers is the worse of the two: somebody starts typing, gets called over to
+ * the chair or simply walks off, and a first name and half a phone number sit on a screen
+ * by the door until the next person picks it up. The confirmation already clears itself
+ * after twenty seconds for exactly this reason and this is the only other place the tablet
+ * holds anybody's details — but it was the one left standing.
+ *
+ * Ninety seconds because the form is read as well as filled: choosing between services and
+ * barbers is a real pause, and a screen that wipes a half-typed number while somebody is
+ * deciding is its own failure.
+ */
+const IDLE_SECONDS = 90;
+let idle: ReturnType<typeof setTimeout> | undefined;
+
+function stopIdleTimer() {
+  if (idle !== undefined) clearTimeout(idle);
+  idle = undefined;
+}
+
+/** Called on any touch, key or field change inside the form — all three bubble. */
+function touchIdleTimer() {
+  stopIdleTimer();
+  idle = setTimeout(() => {
+    clearForm();
+    backToBoard();
+  }, IDLE_SECONDS * 1000);
 }
 
 const availableBarbers = computed(() => kiosk.eligibleBarbers(form.serviceIds));
@@ -143,6 +178,7 @@ async function onJoin() {
       serviceIds: parsed.data.serviceIds,
     });
     joinedId.value = result.entryId;
+    stopIdleTimer();
     screen.value = 'done';
     startReturnCountdown();
   } catch (error) {
@@ -176,6 +212,7 @@ function startReturnCountdown() {
 function backToBoard() {
   if (countdown !== undefined) clearInterval(countdown);
   countdown = undefined;
+  stopIdleTimer();
   joinedId.value = null;
   // A greeting left standing is the last person's name on a shared screen.
   recognise.reset();
@@ -184,6 +221,7 @@ function backToBoard() {
 
 onUnmounted(() => {
   if (countdown !== undefined) clearInterval(countdown);
+  stopIdleTimer();
 });
 
 /** Their own row on the board, so the number shown is the one everyone else sees. */
@@ -266,9 +304,20 @@ const myEntry = computed(
   </section>
 
   <!-- Joining -------------------------------------------------------------- -->
-  <section v-else-if="screen === 'join'" class="join">
+  <!--
+    Any of the three resets the clock, and all three bubble, so one listener on the
+    section covers every field and option button inside it without threading a handler
+    through each one.
+  -->
+  <section
+    v-else-if="screen === 'join'"
+    class="join"
+    @pointerdown="touchIdleTimer"
+    @keydown="touchIdleTimer"
+    @input="touchIdleTimer"
+  >
     <header class="join-head">
-      <Button label="Back" severity="secondary" variant="text" @click="screen = 'board'" />
+      <Button label="Back" severity="secondary" variant="text" @click="backToBoard" />
       <h1>Join the queue</h1>
     </header>
 
