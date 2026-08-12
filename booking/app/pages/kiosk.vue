@@ -83,7 +83,9 @@ const { waitLabel } = kiosk;
 const doorSub = computed(() => {
   const ahead = kiosk.aheadLabel.value;
   if (ahead !== null) return ahead;
-  return (kiosk.walkUp.value?.waitMinutes ?? null) === null ? null : 'Come on in.';
+  // The live figure, not the board's snapshot — the same one the heading is drawn from,
+  // so the two cannot end up disagreeing about whether there is an opening at all.
+  return kiosk.walkUpMinutes.value === null ? null : 'Come on in.';
 });
 
 // --- Joining --------------------------------------------------------------------
@@ -522,25 +524,30 @@ h1 {
 }
 
 .door-brand {
+  /* One number drives the whole mark — bar width, its height, and the stripe pitch.
+     Tuned against the wordmark beside it: much narrower and the pole reads as a rule
+     rather than a pole, and the stripes stop being legible as stripes. */
+  --pole-w: clamp(1.15rem, 3.6vmin, 2.5rem);
+
   flex: 1;
   display: flex;
-  flex-direction: column;
-  align-items: flex-start;
+  flex-direction: row;
+  align-items: center;
   gap: clamp(0.75rem, 2.5vmin, 1.75rem);
   min-width: 0;
 }
 
-/* The pole from `main.css` at hero scale. Not the shared class: that one is fixed
-   at 0.5rem and is worn by the top bar of this very screen. */
+/* The pole from `main.css` at hero scale. Not the shared class: that one is fixed at
+   0.5rem and is worn by the top bar of this very screen. */
 .door-pole {
-  width: clamp(0.7rem, 2.2vmin, 1.5rem);
-  height: clamp(2.2rem, 7vmin, 4.75rem);
+  width: var(--pole-w);
+  height: calc(var(--pole-w) * 2.6);
   border-radius: 2px;
   flex: none;
   background: repeating-linear-gradient(
     -45deg,
-    var(--fcb-accent) 0 clamp(0.35rem, 1.1vmin, 0.75rem),
-    var(--fcb-rail-raised) clamp(0.35rem, 1.1vmin, 0.75rem) clamp(0.7rem, 2.2vmin, 1.5rem)
+    var(--fcb-accent) 0 calc(var(--pole-w) / 2),
+    var(--fcb-rail-raised) calc(var(--pole-w) / 2) var(--pole-w)
   );
 }
 
@@ -624,14 +631,18 @@ h1 {
     gap: clamp(2rem, 6vmin, 4rem);
   }
 
-  .door-brand,
-  .door-ask {
+  /* The lockup is a ROW, so centring it is `justify-content` — `align-items` there is
+     the vertical axis and leaves the mark sitting against the left edge. */
+  .door-brand {
     flex: none;
     width: 100%;
-    align-items: center;
+    justify-content: center;
   }
 
+  .door-ask,
   .door-wait {
+    flex: none;
+    width: 100%;
     align-items: center;
   }
 }

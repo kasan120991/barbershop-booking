@@ -65,7 +65,17 @@ export function useDeviceScreen() {
   const connected = useState<boolean>('device:connected', () => false);
   const settings = useState<ShopSettingsDto | null>('device:settings', () => null);
 
+  /**
+   * A ticking clock, so anything derived from an instant stays true between board pushes.
+   *
+   * Null until mounted, and not merely out of caution about hydration: a clock rendered
+   * on the server is already wrong by however long the response took, and this screen is
+   * on for twelve hours where that shows.
+   */
+  const now = useState<number | null>('device:now', () => null);
+
   let socket: DeviceSocket | null = null;
+  let tick: ReturnType<typeof setInterval> | undefined;
 
   const paired = computed(() => token.value !== null);
   const timezone = computed(() => settings.value?.timezone ?? 'America/New_York');
@@ -171,6 +181,27 @@ export function useDeviceScreen() {
   const walkUp = computed(() => board.value?.walkUp ?? null);
 
   /**
+   * Minutes until that opening, counted against a ticking clock rather than read off the
+   * board.
+   *
+   * The board is pushed on every mutation, so it is live with respect to *events* — but
+   * between two of them nothing changes except the time, and `waitMinutes` was measured
+   * at `generatedAt`. On a quiet afternoon that leaves a front door confidently saying
+   * "about 45 mins" for forty-five minutes. `availableAt` is an absolute instant, so the
+   * client can keep the number honest without asking the server anything.
+   *
+   * Falls back to the server's figure before the clock starts, which keeps the
+   * server-rendered number and the first client render identical.
+   */
+  const walkUpMinutes = computed(() => {
+    const opening = walkUp.value;
+    if (opening === null) return null;
+    if (opening.availableAt === null || now.value === null) return opening.waitMinutes;
+    const ms = new Date(opening.availableAt).getTime() - now.value;
+    return Math.max(0, Math.round(ms / 60_000));
+  });
+
+  /**
    * Deliberately different words from `waitLabel`.
    *
    * That one talks to somebody who has joined and has a quote of their own; this one talks
@@ -179,7 +210,7 @@ export function useDeviceScreen() {
    * "Next opening" above it for the same reason.
    */
   const nextOpeningLabel = computed(() => {
-    const minutes = walkUp.value?.waitMinutes ?? null;
+    const minutes = walkUpMinutes.value;
     if (minutes === null) return 'Ask at the desk';
     if (minutes < 1) return 'No wait';
     return `about ${formatDuration(minutes)}`;
@@ -239,12 +270,24 @@ export function useDeviceScreen() {
         if (value === null) return;
         open();
       });
+
+      /**
+       * Every fifteen seconds, not every second: the finest thing anything derived from
+       * this renders is a whole minute, and a screen that runs all day should not wake
+       * up 43,200 times to redraw the same digits.
+       */
+      now.value = Date.now();
+      tick = setInterval(() => {
+        now.value = Date.now();
+      }, 15_000);
     });
 
     onUnmounted(() => {
       socket?.disconnect();
       socket = null;
       connected.value = false;
+      if (tick !== undefined) clearInterval(tick);
+      tick = undefined;
     });
   }
 
@@ -261,7 +304,9 @@ export function useDeviceScreen() {
     waiting,
     chairs,
     longestWait,
+    now,
     walkUp,
+    walkUpMinutes,
     waitLabel,
     nextOpeningLabel,
     aheadLabel,
