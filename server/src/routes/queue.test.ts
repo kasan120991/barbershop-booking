@@ -732,6 +732,23 @@ describe.skipIf(!reachable)('who may see what', () => {
   });
 
   /**
+   * The kiosk's headline. It is the one figure on the board that is about somebody who is
+   * not on it, so nothing else being right proves this is present.
+   */
+  it('tells a screen when the next opening is for somebody walking in now', async () => {
+    const token = await kioskToken();
+
+    const board = await request(server)
+      .get('/api/queue/board')
+      .set(DEVICE_TOKEN_HEADER, token)
+      .expect(200);
+
+    const walkUp = board.body.board.walkUp;
+    expect(walkUp).not.toBeNull();
+    expect(walkUp.waitMinutes).toBeGreaterThanOrEqual(0);
+  });
+
+  /**
    * The wall display is read-only by definition — mounted out of reach, with nobody
    * standing at it. Without this the two device types differ by a label rather than a
    * permission, and a screen on a wall can add people to the line.

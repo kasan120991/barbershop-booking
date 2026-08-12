@@ -120,6 +120,25 @@ export type PublicQueueEntryDto = z.infer<typeof publicQueueEntryDtoSchema>;
 export const publicQueueBoardDtoSchema = z.object({
   generatedAt: z.iso.datetime(),
   queueEnabled: z.boolean(),
+  /**
+   * The next opening for somebody walking in right now — the kiosk's headline figure.
+   *
+   * Measured AFTER the waiting line is allocated, which is what separates it from
+   * `chairs[].freeFrom` above: that one is taken before, and means "is this barber
+   * available". Neither is a substitute for the other and the kiosk needs this one, or a
+   * front door reads *free now* with four people sitting in the waiting area.
+   *
+   * Public shape only. The staff board has the real line and can read it directly.
+   *
+   * Null when the shop has no walk-in menu to measure against, or no chair can perform the
+   * service measured. `waitMinutes` is null within that when nothing fits before closing.
+   */
+  walkUp: z
+    .object({
+      availableAt: z.iso.datetime().nullable(),
+      waitMinutes: z.int().nullable(),
+    })
+    .nullable(),
   chairs: z.array(
     z.object({
       barberId: z.string(),
