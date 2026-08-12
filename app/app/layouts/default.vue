@@ -64,13 +64,21 @@ const currentLabel = computed(
   () => items.value.find((item) => item.to === route.path)?.label ?? '',
 );
 
-const today = computed(() =>
-  new Intl.DateTimeFormat('en-US', {
-    weekday: 'long',
-    day: 'numeric',
-    month: 'long',
-  }).format(new Date()),
-);
+/**
+ * The shop's date, not the browser's.
+ *
+ * This formatted `new Date()` with no zone, which is the one rule `useShopClock` exists
+ * to enforce: a barber checking the book from another state was told the shop's day was
+ * the one their own phone was on. It also disagreed with the server-rendered pass — the
+ * Nuxt process runs in the machine's zone — so far enough west it hydrated as a Vue
+ * mismatch and the strip changed date under the reader.
+ *
+ * Client-only for the same reason the queue pill below is: the value is derived from
+ * this instant, and the server's instant and the browser's are not the same one. The
+ * fallback holds the line's height so the strip does not jump when it fills in.
+ */
+const shop = useShopClock();
+const today = computed(() => shop.longDate(shop.today()));
 
 const accountItems = computed<MenuItem[]>(() => [
   {
@@ -202,7 +210,12 @@ async function onSwitchMode(next: 'shop' | 'chair') {
 
           <div class="titles">
             <h1 class="page-title">{{ currentLabel }}</h1>
-            <p class="page-sub">{{ today }}</p>
+            <ClientOnly>
+              <p class="page-sub">{{ today }}</p>
+              <template #fallback>
+                <p class="page-sub">&nbsp;</p>
+              </template>
+            </ClientOnly>
           </div>
         </div>
 
