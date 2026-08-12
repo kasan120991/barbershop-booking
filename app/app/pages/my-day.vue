@@ -1,10 +1,11 @@
 <script setup lang="ts">
 /**
- * My Day — a barber's own book.
+ * Schedule — a barber's own book.
  *
- * The first screen a barber-only account ever sees: `useShopMode` makes it the chair-mode
- * home and the route guard bounces non-admins here. So it has to answer the whole
- * question on its own — what is booked, what is walking in, what is left.
+ * The day and the week, for planning rather than for working. `/today` is the chair-mode
+ * home now and answers the between-cuts question — is my chair free, who is next, this
+ * one is done — so this page is free to be the longer look: the whole day in order, the
+ * gaps named, and the week as a time grid.
  *
  * **An agenda, not a time grid.** One list in time order, so a quiet day and a full one
  * take the same room. The one thing a list loses is empty space, and empty space is the
@@ -31,11 +32,12 @@ import {
   formatCents,
   formatDuration,
   type AppointmentDto,
-  type QueueEntryDto,
   type WorkingHoursResponse,
 } from '@francis/shared';
 
-useHead({ title: 'My Day — Francis Cutz' });
+import type { DayItem } from '~/composables/useDayLineup';
+
+useHead({ title: 'Schedule — Francis Cutz' });
 
 const auth = useAuthStore();
 const book = useAppointments();
@@ -91,114 +93,17 @@ onMounted(() => void queue.refresh({ quiet: true }));
 const isToday = computed(() => cursor.value === shop.today());
 
 // --- One day's work, appointments and walk-ins together -----------------------
+//
+// The merge itself lives in `useDayLineup`, because `/today` shows the same day from the
+// same two tables and a second copy is how two screens come to disagree about one
+// afternoon. What stays here is this page's own: the gaps between items, the fold, the
+// row menu and the week grid.
 
-interface DayItem {
-  key: string;
-  startAt: string;
-  endAt: string | null;
-  clientName: string;
-  services: string;
-  durationMinutes: number;
-  priceCents: number;
-  source: string | null;
-  notes: string | null;
-  /** An appointment, or a walk-in the estimator has pencilled in. */
-  projected: boolean;
-  /** True only while the estimate can still move — a waiting walk-in, not a seated one. */
-  moving: boolean;
-  status: string;
-  appointment: AppointmentDto | null;
-}
-
-function sourceLabel(source: string): string | null {
-  if (source === 'KIOSK') return 'Kiosk';
-  if (source === 'ONLINE') return 'Online';
-  if (source === 'VOICE') return 'Phone';
-  return null;
-}
-
-function fromAppointment(appointment: AppointmentDto): DayItem {
-  return {
-    key: appointment.id,
-    startAt: appointment.startAt,
-    endAt: appointment.endAt,
-    clientName: appointment.clientName,
-    services: appointment.services.map((service) => service.name).join(' + '),
-    durationMinutes: appointment.durationMinutes,
-    priceCents: appointment.priceCentsTotal,
-    source: sourceLabel(appointment.source),
-    notes: appointment.notes,
-    projected: false,
-    moving: false,
-    status: appointment.status,
-    appointment,
-  };
-}
-
-function fromQueueEntry(entry: QueueEntryDto): DayItem {
-  return {
-    key: `queue:${entry.id}`,
-    // Guarded by the filter below — an entry with no estimate is not placed.
-    startAt: entry.estimatedReadyAt ?? '',
-    endAt: null,
-    clientName: entry.clientName,
-    services: entry.services.map((service) => service.name).join(' + '),
-    durationMinutes: entry.durationMinutes,
-    priceCents: entry.priceCentsTotal,
-    source: 'Walk-in',
-    notes: entry.notes,
-    projected: true,
-    moving: entry.status === 'WAITING',
-    status: entry.status,
-    appointment: null,
-  };
-}
-
-/** The day's appointments, in time order, split into work and write-offs. */
-const dayAppointments = computed(() =>
-  book.appointments.value
-    .filter((appointment) => shop.localDate(appointment.startAt) === cursor.value)
-    .slice()
-    .sort((a, b) => a.startAt.localeCompare(b.startAt)),
-);
-
-const voids = computed(() =>
-  dayAppointments.value.filter(
-    (appointment) => appointment.status === 'CANCELLED' || appointment.status === 'NO_SHOW',
-  ),
-);
-
-/**
- * Today's walk-ins headed for this chair.
- *
- * `assignedBarberId` rather than `requestedBarberId`, because the estimator's projection
- * is exactly what is being shown — but only where it has produced a time, since an entry
- * it cannot place has nowhere to sit on a list ordered by time.
- */
-const chairWalkIns = computed<QueueEntryDto[]>(() => {
-  if (barberId.value === null) return [];
-  return (queue.board.value?.entries ?? []).filter(
-    (entry) =>
-      entry.assignedBarberId === barberId.value &&
-      entry.estimatedReadyAt !== null &&
-      ['WAITING', 'CALLED', 'IN_CHAIR'].includes(entry.status),
-  );
+const { voids, chairWalkIns, items } = useDayLineup({
+  barberId,
+  date: cursor,
+  isToday,
 });
-
-/** The agenda's copy — only when the day being looked at is today. The week view
- *  gates per column instead, so stepping the cursor cannot move today's walk-ins. */
-const walkIns = computed<QueueEntryDto[]>(() => (isToday.value ? chairWalkIns.value : []));
-
-const items = computed<DayItem[]>(() =>
-  [
-    ...dayAppointments.value
-      .filter(
-        (appointment) => appointment.status !== 'CANCELLED' && appointment.status !== 'NO_SHOW',
-      )
-      .map(fromAppointment),
-    ...walkIns.value.map(fromQueueEntry),
-  ].sort((a, b) => a.startAt.localeCompare(b.startAt)),
-);
 
 /**
  * Rows with the open stretches between them.
@@ -572,7 +477,10 @@ function rowClass(item: DayItem) {
           </span>
           <span class="stat">
             <span class="n" :class="{ warn: stats.booked > 0 }">{{ stats.takings }}</span>
-            <span class="k">Day's Takings</span>
+            <!-- Booked, not taken. `/today` shows money actually collected under the
+                 word "takings", and one nav click between two meanings of it is one too
+                 many. -->
+            <span class="k">Booked Today</span>
           </span>
           <span class="stat">
             <span class="n">{{ stats.toCome }}</span>
