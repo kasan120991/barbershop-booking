@@ -16,6 +16,7 @@
     "db:deploy": "prisma migrate deploy",
     "db:reset": "prisma migrate reset",
     "db:seed": "prisma db seed",
+    "db:demo": "LOG_LEVEL=info tsx prisma/demo.ts",
     "db:studio": "prisma studio",
     "db:test:setup": "DATABASE_URL=mysql://root:root@127.0.0.1:8889/francis_cutz_test prisma migrate deploy"
   },
