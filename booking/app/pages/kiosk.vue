@@ -100,6 +100,7 @@ function clearForm() {
   });
   joinError.value = null;
   fieldErrors.value = {};
+  kiosk.clearQuote();
 }
 
 function startJoin() {
@@ -140,16 +141,78 @@ function touchIdleTimer() {
 
 const availableBarbers = computed(() => kiosk.eligibleBarbers(form.serviceIds));
 
+/**
+ * Long enough that Cut then Beard is one question rather than two.
+ *
+ * Each tap changes the basket, and each basket is a different answer — but a customer
+ * choosing three services taps three times in about a second, and the first two answers
+ * are thrown away before anybody reads them.
+ */
+const QUOTE_DEBOUNCE_MS = 250;
+let quoteTimer: ReturnType<typeof setTimeout> | undefined;
+
+function scheduleQuote() {
+  if (quoteTimer !== undefined) clearTimeout(quoteTimer);
+  quoteTimer = setTimeout(() => void kiosk.loadQuote(form.serviceIds.slice()), QUOTE_DEBOUNCE_MS);
+}
+
 // A barber who was valid a moment ago may not do the service just added.
 watch(
   () => form.serviceIds.slice(),
   () => {
-    if (form.barberId === null) return;
-    if (!availableBarbers.value.some((barber) => barber.id === form.barberId)) {
-      form.barberId = null;
+    if (form.barberId !== null) {
+      if (!availableBarbers.value.some((barber) => barber.id === form.barberId)) {
+        form.barberId = null;
+      }
+    }
+    scheduleQuote();
+  },
+);
+
+/**
+ * The line moved, so every figure on this screen did too.
+ *
+ * Somebody joined, or a barber called the next person in. One watcher covers both the
+ * socket push and the minute poll underneath it, because both write the board. Not
+ * watched on the fifteen-second clock tick: the labels recompute themselves from the
+ * absolute instant, which is the whole reason the server sends one.
+ */
+watch(
+  () => kiosk.board.value?.generatedAt,
+  () => {
+    if (screen.value === 'join' && form.serviceIds.length > 0) scheduleQuote();
+  },
+);
+
+/**
+ * A shop that stops taking walk-ins mid-form.
+ *
+ * Better than refusing the quote server-side: this returns them to a screen that explains
+ * itself, rather than leaving them on a form whose labels quietly stop meaning anything.
+ */
+watch(
+  () => kiosk.walkInsOpen.value,
+  (open) => {
+    if (!open && screen.value === 'join') {
+      clearForm();
+      backToBoard();
     }
   },
 );
+
+/**
+ * What goes under a barber's name, or nothing.
+ *
+ * Blank rather than the previous basket's figure whenever the answer on hand was computed
+ * for a different one: a stale number dimmed is still a stale number, and on a debounce
+ * this short the gap is a blink.
+ */
+function waitFor(barberId: string | null): string {
+  if (!kiosk.quoteMatches(form.serviceIds)) return '';
+  const minutes =
+    barberId === null ? kiosk.anyoneWait.value : kiosk.barberWaits.value.get(barberId);
+  return kiosk.pickLabel(minutes);
+}
 
 const totals = computed(() => {
   const chosen = kiosk.walkInServices.value.filter((service) =>
@@ -240,6 +303,7 @@ function backToBoard() {
 
 onUnmounted(() => {
   if (countdown !== undefined) clearInterval(countdown);
+  if (quoteTimer !== undefined) clearTimeout(quoteTimer);
   stopIdleTimer();
 });
 
@@ -335,7 +399,14 @@ const myEntry = computed(
 
     <div v-if="form.serviceIds.length" class="field">
       <span class="fcb-label">With who?</span>
-      <div class="options">
+
+      <!-- Not "Anyone" of nobody: with no capable barber there is nothing to choose
+           between, and joining would be refused anyway. -->
+      <p v-if="availableBarbers.length === 0" class="no-barbers">
+        Nobody in today does all of that. Try fewer services, or ask at the desk.
+      </p>
+
+      <div v-else class="options">
         <button
           type="button"
           class="option"
@@ -343,7 +414,9 @@ const myEntry = computed(
           @click="form.barberId = null"
         >
           <span class="o-name">Anyone</span>
-          <span class="o-meta">Shortest wait</span>
+          <!-- The figure says "shortest wait" better than the words did: it IS the
+               shortest of the ones below it. -->
+          <span class="o-meta fcb-num">{{ waitFor(null) }}</span>
         </button>
         <button
           v-for="barber in availableBarbers"
@@ -354,6 +427,9 @@ const myEntry = computed(
           @click="form.barberId = barber.id"
         >
           <span class="o-name">{{ barber.displayName }}</span>
+          <!-- Fully booked still chooses: the desk can squeeze somebody in, and the
+               estimator records why the entry has no time rather than refusing it. -->
+          <span class="o-meta fcb-num">{{ waitFor(barber.id) }}</span>
         </button>
       </div>
     </div>
@@ -710,9 +786,26 @@ h1 {
   font-weight: 600;
 }
 
+/*
+ * The height is reserved whether or not there is a figure in it.
+ *
+ * A quote lands a few hundred milliseconds after the services are picked, which is long
+ * enough for a thumb to be moving towards a name. Letting the line appear would shove the
+ * whole grid down under it.
+ */
 .o-meta {
   font-size: 0.875rem;
   color: var(--fcb-rail-muted);
+  min-height: 1.3125rem;
+}
+
+.no-barbers {
+  margin: 0;
+  padding: 1rem 1.125rem;
+  border: 1px dashed var(--fcb-rail-line);
+  border-radius: 12px;
+  color: var(--fcb-rail-muted);
+  font-size: 0.9375rem;
 }
 
 .big :deep(input),

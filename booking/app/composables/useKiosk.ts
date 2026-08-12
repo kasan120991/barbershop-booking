@@ -6,10 +6,12 @@
  * display. This file is only the part a wall display has no business doing.
  */
 
-import type {
-  BarberPublicDto,
-  PublicQueueBoardDto,
-  ServiceDto,
+import {
+  formatDuration,
+  type BarberPublicDto,
+  type PublicQueueBoardDto,
+  type ServiceDto,
+  type WalkInQuoteDto,
 } from '@francis/shared';
 
 export function useKiosk() {
@@ -18,6 +20,7 @@ export function useKiosk() {
 
   const services = useState<ServiceDto[]>('kiosk:services', () => []);
   const barbers = useState<BarberPublicDto[]>('kiosk:barbers', () => []);
+  const quote = useState<WalkInQuoteDto | null>('kiosk:quote', () => null);
 
   /** The menu and roster. Public endpoints — the token is neither needed nor sent. */
   async function loadOptions(): Promise<void> {
@@ -51,6 +54,118 @@ export function useKiosk() {
       .sort((a, b) => a.sortOrder - b.sortOrder || a.displayName.localeCompare(b.displayName));
   }
 
+  // --- What each barber would cost them in waiting ----------------------------
+
+  /**
+   * Guards against the slower of two answers landing last.
+   *
+   * A customer taps Cut, then Beard, and two requests are in flight for two different
+   * baskets. Without this the first can arrive second and put a thirty-minute figure
+   * under a forty-five-minute basket — a wrong number beside a barber's name, which is
+   * worse than no number at all.
+   */
+  let asked = 0;
+
+  /**
+   * The quote for a basket. A courtesy, so nothing here can stop somebody joining.
+   *
+   * The board's own headline is measured against the shortest thing on the walk-in menu,
+   * which is the right answer at the door and the wrong one here: by this point they have
+   * chosen, and an hour-long cut does not fit where a line-up does.
+   */
+  async function loadQuote(serviceIds: string[]): Promise<void> {
+    if (serviceIds.length === 0) {
+      clearQuote();
+      return;
+    }
+
+    const mine = (asked += 1);
+    try {
+      const response = await api<{ quote: WalkInQuoteDto }>('/queue/quote', {
+        query: { serviceIds: serviceIds.join(',') },
+        headers: screen.deviceHeaders(),
+      });
+      if (mine !== asked) return;
+      quote.value = response.quote;
+    } catch (error) {
+      if (mine !== asked) return;
+      // A 401 on a screen means revoked, not expired — the same rule `loadBoard` follows.
+      if (toApiFailure(error).status === 401) {
+        screen.forgetToken();
+        return;
+      }
+      // The menu changed under them, or the shop is unreachable. The Join button will say
+      // so properly; these lines simply go quiet rather than state something untrue.
+      quote.value = null;
+    }
+  }
+
+  function clearQuote(): void {
+    asked += 1;
+    quote.value = null;
+  }
+
+  /**
+   * True only when the answer on hand was computed for exactly this basket.
+   *
+   * The sequence number above orders our own requests; this catches everything else — a
+   * refetch triggered by the board moving while a thumb is mid-tap, a tablet resumed from
+   * sleep. It is why the server echoes back the services it answered about.
+   */
+  function quoteMatches(serviceIds: string[]): boolean {
+    const held = quote.value;
+    if (held === null || held.serviceIds.length !== serviceIds.length) return false;
+    const asked = [...serviceIds].sort();
+    return [...held.serviceIds].sort().every((id, index) => id === asked[index]);
+  }
+
+  /**
+   * Minutes until an opening, counted against the ticking clock rather than read off the
+   * answer — the same reasoning as `walkUpMinutes`, and for the same failure: `waitMinutes`
+   * was measured when the quote was made, and somebody reads this screen for a minute or
+   * two while deciding.
+   *
+   * Three outcomes, and they must stay three. `undefined` is "no answer for this person",
+   * `null` is "an answer, and it is not today", a number is a wait. Collapsing the first
+   * two labels a barber who is merely missing from the payload as fully booked.
+   */
+  function openingMinutes(
+    opening: { availableAt: string | null; waitMinutes: number | null } | null | undefined,
+  ): number | null | undefined {
+    if (opening === null || opening === undefined) return undefined;
+    if (opening.availableAt === null) return null;
+    if (screen.now.value === null) return opening.waitMinutes;
+    return Math.max(0, Math.round((new Date(opening.availableAt).getTime() - screen.now.value) / 60_000));
+  }
+
+  const barberWaits = computed(
+    () =>
+      new Map(
+        (quote.value?.barbers ?? []).map((row) => [row.barberId, openingMinutes(row)] as const),
+      ),
+  );
+
+  const anyoneWait = computed(() => openingMinutes(quote.value?.soonest));
+
+  /**
+   * A third vocabulary for a third audience.
+   *
+   * `waitLabel` talks to somebody already in the line and `nextOpeningLabel` to somebody
+   * who has not picked anything. This one talks to somebody comparing people, and the
+   * claim it makes is conditional: *if* you pick him, you sit down in this long.
+   *
+   * It says the same two things as the front door on purpose — a customer who read "about
+   * 25 mins" on the idle screen should not have to learn a second phrasing four taps
+   * later. The third case is its own, because "Ask at the desk" is advice for somebody
+   * with nowhere else to go, and this reader has two other barbers to choose from.
+   */
+  function pickLabel(minutes: number | null | undefined): string {
+    if (minutes === undefined) return '';
+    if (minutes === null) return 'Fully booked';
+    if (minutes < 1) return 'No wait';
+    return `about ${formatDuration(minutes)}`;
+  }
+
   async function join(input: {
     phone: string;
     firstName: string;
@@ -76,5 +191,12 @@ export function useKiosk() {
     eligibleBarbers,
     loadOptions,
     join,
+    quote,
+    loadQuote,
+    clearQuote,
+    quoteMatches,
+    barberWaits,
+    anyoneWait,
+    pickLabel,
   };
 }
