@@ -37,3 +37,6 @@ docker/mysql-data/
 
 # playwright mcp scratch output
 .playwright-mcp/
+
+# claude code local state (incl. nested git worktrees)
+.claude/

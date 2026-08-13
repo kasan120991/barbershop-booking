@@ -5,6 +5,16 @@ Booking, walk-in queue, point of sale, and barber payouts for the Francis Cutz b
 Barbers rent a booth, keep 100% of every cut, and cash out their own card earnings daily. Clients
 book online or walk in and join a live queue on the shop tablet.
 
+<!-- SCREENSHOT SLOT
+     Capture two or three screenshots and drop them in docs/screenshots/, then uncomment:
+
+     ![Public booking](docs/screenshots/booking.png)
+     ![In-shop kiosk queue](docs/screenshots/kiosk.png)
+
+     Run `pnpm dev` with seeded demo data and shoot at 1440×900. The kiosk queue is the most
+     distinctive screen in the project — lead with it. This repo currently has no images at all,
+     and a reader who won't clone it has nothing to look at. -->
+
 ## Packages
 
 | Package | Path | What it is |
@@ -13,6 +23,31 @@ book online or walk in and join a live queue on the shop tablet.
 | `@francis/server` | `server` | Express 5 · Prisma · MySQL · Socket.IO · Stripe Connect |
 | `@francis/app` | `app` | Nuxt 4 · PrimeVue — staff app (admin + barber), authenticated |
 | `@francis/booking` | `booking` | Nuxt 4 · PrimeVue — public booking site + in-shop `/kiosk` |
+
+## The parts worth reading
+
+Booking software is mostly forms. These are the parts that weren't.
+
+**One schema package is the API contract.** `@francis/shared` holds the zod schemas, types, and
+socket event definitions, and all three consumers — the server, the staff app, and the booking site
+— import from it. The server validates requests against the same schema the clients build them
+from, so a field can't drift between API and UI without the typecheck failing across the workspace.
+This is the whole reason the project is a monorepo rather than three repos.
+
+**The payout model drove the money design.** Barbers rent a booth and keep 100% of every cut, which
+means the shop never owns their card revenue — it passes through. That's Stripe Connect, with each
+barber cashing out their own earnings daily rather than waiting on a shop payroll run. All money is
+stored as **integer cents**; nothing about a payout is allowed to depend on float arithmetic.
+
+**The walk-in queue is the realtime surface.** A client joins on the shop tablet at `/kiosk` and the
+queue updates on every staff device over Socket.IO. Walk-ins and online bookings compete for the
+same chairs, so the queue and the appointment schedule have to agree about who is next — that
+reconciliation is the hardest logic in the project.
+
+**Times are stored UTC, and the server pins `TZ` rather than reconfiguring MySQL.** The local MySQL
+instance runs in the machine's timezone and is shared with other projects, so changing its global
+`time_zone` would have been a fix that broke someone else's database. Pinning the process was the
+smaller blast radius.
 
 ## Requirements
 
