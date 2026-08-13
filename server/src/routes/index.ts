@@ -13,6 +13,7 @@ import { payoutRouter } from './payouts.js';
 import { queueRouter } from './queue.js';
 import { rentRouter } from './rent.js';
 import { staffRouter } from './staff.js';
+import { voiceRouter } from './voice.js';
 
 /** Everything mounted under `API_PREFIX`. New resource routers get registered here. */
 export const apiRouter: Router = Router();
@@ -30,3 +31,4 @@ apiRouter.use(payoutRouter);
 apiRouter.use(rentRouter);
 apiRouter.use(bookingRouter);
 apiRouter.use(queueRouter);
+apiRouter.use(voiceRouter);

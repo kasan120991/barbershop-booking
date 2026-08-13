@@ -44,15 +44,24 @@ export function requireRole(...roles: Role[]): RequestHandler {
 
 export const requireAdmin: RequestHandler = requireRole(ROLE.ADMIN as Role);
 
-/** A paired kiosk or display device, optionally of a specific type. */
-export function requireDevice(type?: DeviceType): RequestHandler {
+/**
+ * A paired device, optionally narrowed to specific types.
+ *
+ * Variadic rather than a single optional type because there are now three kinds and the
+ * useful guards are subsets: the redacted board is for the two screens, the voice webhook
+ * is for the phone line alone. `requireDevice()` with no argument still means "any
+ * device", but reach for it only when a route genuinely serves all three — a guard that
+ * names its types stays correct when a fourth kind is added, and one that does not
+ * silently widens.
+ */
+export function requireDevice(...types: DeviceType[]): RequestHandler {
   return (req, _res, next) => {
     if (req.auth?.kind !== 'device') {
       next(new UnauthenticatedError('This device is not paired.'));
       return;
     }
 
-    if (type !== undefined && req.auth.deviceType !== type) {
+    if (types.length > 0 && !types.includes(req.auth.deviceType)) {
       next(new ForbiddenError('This device is not allowed to do that.'));
       return;
     }

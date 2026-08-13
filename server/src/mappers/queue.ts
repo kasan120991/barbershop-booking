@@ -79,6 +79,7 @@ export function toQueueBoardDto(board: QueueBoard): QueueBoardDto {
       barberId: chair.barberId,
       displayName: chair.displayName,
       nowServingEntryId: chair.nowServingEntryId,
+      nowServingAppointmentId: chair.nowServingAppointmentId,
       freeFrom: chair.freeFrom?.toISOString() ?? null,
       waitingCount: chair.waitingCount,
     })),
@@ -119,14 +120,27 @@ export function toPublicQueueBoardDto(board: QueueBoard): PublicQueueBoardDto {
             availableAt: board.walkUp.availableAt?.toISOString() ?? null,
             waitMinutes: waitMinutes(board.walkUp.availableAt, board.generatedAt),
           },
-    chairs: board.chairs.map((chair) => ({
-      barberId: chair.barberId,
-      displayName: chair.displayName,
-      // First name only in the headline — even an initial is more than the room needs.
-      nowServing: nowServing.get(chair.barberId) ?? null,
-      calledUp: calledUp.get(chair.barberId) ?? null,
-      freeFrom: chair.freeFrom?.toISOString() ?? null,
-    })),
+    chairs: board.chairs.map((chair) => {
+      const walkIn = nowServing.get(chair.barberId) ?? null;
+      const booked = chair.occupant;
+
+      return {
+        barberId: chair.barberId,
+        displayName: chair.displayName,
+        occupied: walkIn !== null || booked !== null,
+        /**
+         * First name only in the headline — even an initial is more than the room needs.
+         *
+         * From either table, and a seated walk-in wins the tie. The board has always
+         * named a walk-in in the chair, and nobody in the room can tell which table a
+         * person came out of — so naming one and not the other would publish exactly the
+         * distinction the shop has no reason to publish.
+         */
+        nowServing: walkIn ?? booked?.firstName ?? null,
+        calledUp: calledUp.get(chair.barberId) ?? null,
+        freeFrom: chair.freeFrom?.toISOString() ?? null,
+      };
+    }),
     entries: board.entries.map((row) => ({
       id: row.entry.id,
       position: row.assignment?.position ?? 0,

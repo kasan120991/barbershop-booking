@@ -7,6 +7,7 @@
  */
 
 export * from './calendar-lanes.js';
+export * from './chair.js';
 export * from './contracts/index.js';
 export * from './duration.js';
 export * from './enums.js';

@@ -11,6 +11,7 @@ import {
   availabilityQuerySchema,
   cancelAppointmentRequestSchema,
   createAppointmentRequestSchema,
+  rescheduleAppointmentRequestSchema,
   ROLE,
   updateAppointmentStatusRequestSchema,
   normalizePhone,
@@ -41,6 +42,7 @@ import {
   getAppointmentByToken,
   getAppointmentOwner,
   listAppointments,
+  rescheduleAppointment,
   updateAppointmentStatus,
 } from '../services/booking.js';
 
@@ -222,6 +224,48 @@ bookingRouter.post('/appointments/:appointmentId/cancel', requireUser, async (re
   });
 
   res.json({ appointment: toAppointmentDto(await requireLoaded(appointmentId)) });
+});
+
+/**
+ * Staff reschedule.
+ *
+ * The desk must not be able to do less than the phone. `rescheduleAppointment` landed
+ * for the voice receptionist, and without this route a caller could move a booking that
+ * the person standing at the counter could only cancel and rebook — losing the client's
+ * cancel link and splitting one visit across two rows in the process.
+ *
+ * Self-or-admin, and both flags off, exactly like the cancel above it: staff are standing
+ * in the shop and are not held to the notice window or to the shop's online switches.
+ */
+bookingRouter.post('/appointments/:appointmentId/reschedule', requireUser, async (req, res) => {
+  const appointmentId = pathParam(req, 'appointmentId');
+  const input = rescheduleAppointmentRequestSchema.parse(req.body);
+
+  assertBarberSelfOrAdmin(req, await getAppointmentOwner(appointmentId));
+
+  const startAt = new Date(input.startAt);
+  if (Number.isNaN(startAt.getTime())) throw new ValidationError('That start time is not valid.');
+
+  const before = await getAppointment(appointmentId);
+
+  const moved = await rescheduleAppointment({
+    appointmentId,
+    startAt,
+    ...(input.barberId == null ? {} : { barberId: input.barberId }),
+    ...(input.serviceIds == null ? {} : { serviceIds: input.serviceIds }),
+    enforceMinimumNotice: false,
+    enforceOnlineRules: false,
+  });
+
+  await recordAudit(auditContext(req), {
+    action: 'appointment.rescheduled',
+    entityType: 'Appointment',
+    entityId: appointmentId,
+    before: { barberId: before?.barberId, startAt: before?.startAt },
+    after: { barberId: moved.barberId, startAt: moved.startAt },
+  });
+
+  res.json({ appointment: toAppointmentDto(moved) });
 });
 
 /** Self-or-admin for the same reason as the cancel above. */

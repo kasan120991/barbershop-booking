@@ -87,6 +87,38 @@ export const pairingCodeDtoSchema = z.object({
 });
 export type PairingCodeDto = z.infer<typeof pairingCodeDtoSchema>;
 
+/**
+ * What `POST /devices` hands back for a VOICE line: the token itself, once.
+ *
+ * A different shape from `PairingCodeDto` because it is a different secret with a
+ * different life. A pairing code expires in fifteen minutes and is exchanged for
+ * something else; this IS the credential, it never expires, and the only way to stop it
+ * is to revoke it. The admin UI has to say so, which it cannot do if both arrive
+ * looking the same.
+ */
+export const voiceCredentialDtoSchema = z.object({
+  deviceId: z.string(),
+  label: z.string(),
+  type: z.literal(DEVICE_TYPE.VOICE),
+  /** Plaintext, shown exactly once. Only its hash is stored, so it cannot be re-read. */
+  deviceToken: z.string(),
+});
+export type VoiceCredentialDto = z.infer<typeof voiceCredentialDtoSchema>;
+
+/**
+ * The two things creating a device can return, discriminated by `type`.
+ *
+ * A union rather than one shape with both fields optional: a client that forgets to
+ * check which it got should fail to compile, not render an empty "pairing code" box for
+ * a phone line.
+ */
+export const createdDeviceResponseSchema = z.discriminatedUnion('type', [
+  pairingCodeDtoSchema.extend({ type: z.literal(DEVICE_TYPE.KIOSK) }),
+  pairingCodeDtoSchema.extend({ type: z.literal(DEVICE_TYPE.DISPLAY) }),
+  voiceCredentialDtoSchema,
+]);
+export type CreatedDeviceResponse = z.infer<typeof createdDeviceResponseSchema>;
+
 export const pairDeviceRequestSchema = z.object({
   /** Accepts "4820-1937" or "48201937"; the server normalizes. */
   pairingCode: z.string().trim().min(4).max(20),

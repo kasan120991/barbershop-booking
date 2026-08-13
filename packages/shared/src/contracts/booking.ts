@@ -61,6 +61,15 @@ export const appointmentDtoSchema = z.object({
   clientName: z.string(),
   startAt: z.iso.datetime(),
   endAt: z.iso.datetime(),
+  /**
+   * When the client ACTUALLY sat down, or null if they have not.
+   *
+   * Distinct from `startAt`, which is when they were due — and the two diverge constantly.
+   * A progress bar or a finish time drawn from `startAt` describes the timetable rather
+   * than the cut: a client seated three hours early leaves the bar at zero and the "done"
+   * time hours out, which is exactly the bug this field was added for.
+   */
+  startedAt: z.iso.datetime().nullable(),
   durationMinutes: z.int(),
   priceCentsTotal: z.int(),
   status: z.enum(Object.values(APPOINTMENT_STATUS) as [string, ...string[]]),
@@ -91,6 +100,22 @@ export const updateAppointmentStatusRequestSchema = z.object({
   status: z.enum(Object.values(APPOINTMENT_STATUS) as [string, ...string[]]),
 });
 export type UpdateAppointmentStatusRequest = z.infer<typeof updateAppointmentStatusRequestSchema>;
+
+/**
+ * Moving an appointment.
+ *
+ * `serviceIds` is absent on purpose in the common case: a move is not a repricing, and
+ * omitting them keeps the snapshotted price and duration the booking was made at. Supply
+ * them only when the basket itself is genuinely changing.
+ */
+export const rescheduleAppointmentRequestSchema = z.object({
+  /** A slot returned by the availability endpoint. */
+  startAt: z.iso.datetime(),
+  /** Omitted keeps the current barber. */
+  barberId: z.string().min(1).nullish(),
+  serviceIds: z.array(z.string().min(1)).min(1).nullish(),
+});
+export type RescheduleAppointmentRequest = z.infer<typeof rescheduleAppointmentRequestSchema>;
 
 export const cancelAppointmentRequestSchema = z.object({
   reason: z.string().trim().max(200).nullish(),

@@ -160,8 +160,15 @@ queueRouter.get('/queue/quote', quoteLimit, async (req, res) => {
   res.json({ quote: body });
 });
 
-/** Kiosk and wall display. No type restriction — both read the same redacted board. */
-queueRouter.get('/queue/board', requireDevice(), async (_req, res) => {
+/**
+ * Kiosk and wall display — both read the same redacted board.
+ *
+ * Named rather than left open to any device. The phone line is a device too now, and it
+ * has no reason to read the board: it quotes a wait through `/queue/quote`, which is a
+ * function of the caller's own services. Naming the two screens keeps a leaked voice
+ * token from reading even the redacted names of everybody in the shop.
+ */
+queueRouter.get('/queue/board', requireDevice('KIOSK', 'DISPLAY'), async (_req, res) => {
   const body: PublicQueueBoardDto = toPublicQueueBoardDto(await getQueueBoard());
   res.json({ board: body });
 });

@@ -26,6 +26,23 @@ export default defineConfig({
        */
       STRIPE_SECRET_KEY: 'sk_test_fixture_key_not_a_real_account',
       STRIPE_WEBHOOK_SECRET: 'whsec_fixture_secret_for_signing_tests',
+
+      /**
+       * Pinned for the same reason as the Stripe keys: the suite must answer the same
+       * way on every machine.
+       *
+       * This one was learned the hard way. The greeting-hook test asserted the
+       * *unconfigured* path — an empty 200 — and passed only because nobody had
+       * provisioned Vapi yet. The moment a real `VAPI_ASSISTANT_ID` landed in `.env`,
+       * dotenv handed it to the suite and the test failed on a developer's machine while
+       * the code was perfectly correct. A test that depends on what somebody has set up
+       * locally is not a test.
+       *
+       * `VAPI_API_KEY` stays deliberately UNSET: nothing in the suite may reach Vapi's
+       * API, and `lib/vapi.ts` throwing a named error is the behaviour we want if
+       * anything ever tries.
+       */
+      VAPI_ASSISTANT_ID: 'asst_fixture_not_a_real_assistant',
     },
     // The Prisma client is heavy to import; give DB suites room on a cold start.
     testTimeout: 20_000,

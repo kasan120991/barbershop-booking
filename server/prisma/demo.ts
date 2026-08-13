@@ -346,6 +346,15 @@ async function main() {
             durationMinutes: cut.service.durationMinutes,
             priceCentsTotal: cut.service.priceCents,
             status: cut.status,
+            /**
+             * Stamped for the cut in progress, exactly as pressing Start would.
+             *
+             * Without it the demo data recreates the bug it was seeded to demonstrate the
+             * absence of: the estimator would know only the scheduled window, and the wall
+             * board would announce a barber as free with a client in the chair. Mirrors the
+             * `startedAt` given to the seeded IN_CHAIR queue entries further down.
+             */
+            startedAt: cut.status === 'IN_PROGRESS' ? cut.startAt : null,
             source: random() > 0.5 ? 'ONLINE' : 'STAFF',
             services: {
               create: {

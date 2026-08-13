@@ -21,6 +21,8 @@
  * this screen faces the entire shop.
  */
 
+import { chairState } from '@francis/shared';
+
 definePageMeta({ layout: 'display' });
 
 useHead({ title: 'Queue — Francis Cutz' });
@@ -73,12 +75,31 @@ onUnmounted(() => {
  * the last thing committed to that chair, which for an idle barber is a moment that has
  * already passed. A minute of slack, because the board only redraws every ten seconds.
  */
-function chairLabel(freeFrom: string | null): string {
-  if (freeFrom === null) return 'Free now';
-  const at = new Date(freeFrom).getTime();
-  const reference = (now.value ?? new Date()).getTime();
-  if (at <= reference + 60_000) return 'Free now';
-  return `Free ${screen.clock(freeFrom)}`;
+/**
+ * The four states, in this screen's words.
+ *
+ * `null` used to read "Free now" here — the exact inverse of what the server means by it
+ * and of what both staff screens say. A barber with nothing left in the day was announced
+ * to the room as available. The states now come from `chairState` so the three screens
+ * cannot drift apart again; only the wording is this screen's own.
+ */
+function chairLabel(chair: { occupied: boolean; freeFrom: string | null }): string {
+  switch (
+    chairState({
+      occupied: chair.occupied,
+      freeFrom: chair.freeFrom,
+      asOf: now.value?.getTime() ?? null,
+    })
+  ) {
+    case 'OCCUPIED':
+      return 'In the chair';
+    case 'DONE_FOR_THE_DAY':
+      return 'Done for the day';
+    case 'OPEN_NOW':
+      return 'Free now';
+    default:
+      return `Free ${screen.clock(chair.freeFrom ?? '')}`;
+  }
 }
 
 const clockLabel = computed(() =>
@@ -185,10 +206,10 @@ const overflow = computed(() => Math.max(0, rows.value.length - MAX_ROWS));
               v-for="chair in screen.chairs.value"
               :key="chair.barberId"
               class="chair"
-              :class="{ busy: Boolean(chair.nowServing), calling: Boolean(chair.calledUp) }"
+              :class="{ busy: chair.occupied, calling: Boolean(chair.calledUp) }"
             >
               <span class="chair-who">{{ chair.displayName }}</span>
-              <span v-if="chair.nowServing" class="chair-now">{{ chair.nowServing }}</span>
+              <span v-if="chair.occupied" class="chair-now">{{ chair.nowServing ?? 'In the chair' }}</span>
 
               <!--
                 Somebody has been called to this chair and is still crossing the room.
@@ -202,7 +223,7 @@ const overflow = computed(() => Math.max(0, rows.value.length - MAX_ROWS));
                 <span class="chair-now up">Come on up</span>
               </template>
 
-              <span v-else class="chair-now free">{{ chairLabel(chair.freeFrom) }}</span>
+              <span v-else class="chair-now free">{{ chairLabel(chair) }}</span>
             </article>
           </div>
 

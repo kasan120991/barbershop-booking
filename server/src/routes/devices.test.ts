@@ -325,6 +325,122 @@ describe.skipIf(!reachable)('the device audit trail', () => {
   });
 });
 
+describe.skipIf(!reachable)('the voice line credential', () => {
+  beforeEach(reseed);
+
+  async function createVoiceLine(label = 'DEVTEST Phone line') {
+    const admin = await adminSession();
+    const response = await request(server)
+      .post('/api/devices')
+      .set('Cookie', admin.cookies)
+      .set(CSRF_HEADER, admin.csrfToken)
+      .send({ label, type: 'VOICE' })
+      .expect(201);
+    return { admin, ...response.body };
+  }
+
+  it('hands back the token itself, and never a pairing code', async () => {
+    const { deviceToken, pairingCode, deviceId, type } = await createVoiceLine();
+
+    expect(type).toBe('VOICE');
+    expect(deviceToken).toBeTruthy();
+    // The whole point of the branch: no code is created, so none can be shown, leaked,
+    // or left sitting in the database as a live credential nobody will ever redeem.
+    expect(pairingCode).toBeUndefined();
+
+    const device = await prisma.device.findUnique({ where: { id: deviceId } });
+    expect(device?.tokenHash).toBe(hashToken(deviceToken));
+    expect(device?.tokenHash).not.toBe(deviceToken);
+    expect(device?.pairingCodeHash).toBeNull();
+    // Paired at creation: there is no second step to wait for.
+    expect(device?.pairedAt).not.toBeNull();
+  });
+
+  it('cannot be paired into, because there is no code to match', async () => {
+    await createVoiceLine();
+
+    // `redeemPairingCode` looks a row up BY `pairingCodeHash`, so a null one is
+    // unreachable by construction rather than by a check that could be removed.
+    await request(server)
+      .post('/api/devices/pair')
+      .send({ pairingCode: '0000-0000' })
+      .expect(404);
+  });
+
+  it('keeps the token out of the audit trail', async () => {
+    const { deviceId, deviceToken } = await createVoiceLine('DEVTEST Audited line');
+
+    const logged = await prisma.auditLog.findFirst({
+      where: { action: 'device.created', entityId: deviceId },
+    });
+
+    expect(logged?.after).toMatchObject({ label: 'DEVTEST Audited line', type: 'VOICE' });
+
+    // The failure this guards is one careless `after: voice` — the service's return
+    // value carries the live token, and unlike a pairing code it never expires.
+    const text = JSON.stringify(logged);
+    expect(text).not.toContain(deviceToken);
+    expect(text).not.toContain('tokenHash');
+    expect(text).not.toContain('deviceToken');
+  });
+
+  it('is revoked and deleted by the same two steps as a screen', async () => {
+    const { deviceId, deviceToken, admin } = await createVoiceLine('DEVTEST Retired line');
+
+    // Deleting a live line would silently cut the shop's phone off mid-call.
+    await request(server)
+      .delete(`/api/devices/${deviceId}`)
+      .set('Cookie', admin.cookies)
+      .set(CSRF_HEADER, admin.csrfToken)
+      .expect(409);
+
+    await request(server)
+      .post(`/api/devices/${deviceId}/revoke`)
+      .set('Cookie', admin.cookies)
+      .set(CSRF_HEADER, admin.csrfToken)
+      .expect(204);
+
+    const device = await prisma.device.findUnique({ where: { id: deviceId } });
+    expect(device?.tokenHash).toBeNull();
+
+    await request(server)
+      .delete(`/api/devices/${deviceId}`)
+      .set('Cookie', admin.cookies)
+      .set(CSRF_HEADER, admin.csrfToken)
+      .expect(204);
+
+    // And the revoked token stops resolving, which is what revocation is for.
+    await request(server)
+      .get('/api/queue/board')
+      .set(DEVICE_TOKEN_HEADER, deviceToken)
+      .expect(401);
+  });
+
+  it('cannot read the queue board, which is for the two screens', async () => {
+    const { deviceToken } = await createVoiceLine();
+
+    // A voice line quotes a wait from the caller's own services; it has no reason to
+    // read the names of everybody sitting in the shop, even redacted. Naming the two
+    // screens on that route is what keeps a leaked phone token from doing so.
+    await request(server)
+      .get('/api/queue/board')
+      .set(DEVICE_TOKEN_HEADER, deviceToken)
+      .expect(403);
+  });
+
+  it('cannot add anyone to the walk-in queue', async () => {
+    const { deviceToken } = await createVoiceLine();
+
+    const response = await request(server)
+      .post('/api/queue')
+      .set(DEVICE_TOKEN_HEADER, deviceToken)
+      .send({ phone: '4155550301', firstName: 'Marcus', serviceIds: ['whatever'] });
+
+    // Refused as a device that is not a kiosk, before the body is even looked at.
+    expect(response.status).toBe(403);
+  });
+});
+
 describe.skipIf(!reachable)('device token scope', () => {
   beforeEach(reseed);
 

@@ -7,9 +7,12 @@
  * second time it did the same work, and there would be a moment in between where the
  * screen showed a board that no longer existed.
  *
- * Polling is the temporary half. Phase 7 replaces `poll()` with a socket subscription
- * to the `shop` room; nothing else in here or in the components has to change, because
- * both do the same thing — put a fresh `QueueBoardDto` in the same piece of state.
+ * The socket subscription landed and `queue:updated` now writes the same piece of state
+ * this does — which is why nothing in here or in the components had to change for it.
+ *
+ * `poll()` stayed, and is no longer the temporary half: it is the backstop under the
+ * socket, for a link that dies quietly while reporting itself healthy. A frozen board
+ * reads exactly like a quiet morning.
  */
 
 import type {

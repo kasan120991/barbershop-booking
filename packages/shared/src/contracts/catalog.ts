@@ -87,6 +87,8 @@ export const shopSettingsDtoSchema = z.object({
   minimumNoticeMinutes: z.int().nonnegative(),
   walkInQueueEnabled: z.boolean(),
   onlineBookingEnabled: z.boolean(),
+  /** The phone receptionist's own switch — separate from the two above by design. */
+  voiceBookingEnabled: z.boolean(),
   hours: z.array(shopHoursDtoSchema),
 });
 export type ShopSettingsDto = z.infer<typeof shopSettingsDtoSchema>;
@@ -152,6 +154,7 @@ export const updateShopSettingsRequestSchema = z.object({
   minimumNoticeMinutes: z.int().min(0).max(MINUTES_IN_DAY * 7).optional(),
   walkInQueueEnabled: z.boolean().optional(),
   onlineBookingEnabled: z.boolean().optional(),
+  voiceBookingEnabled: z.boolean().optional(),
 });
 export type UpdateShopSettingsRequest = z.infer<typeof updateShopSettingsRequestSchema>;
 

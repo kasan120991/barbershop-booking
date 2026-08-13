@@ -10,7 +10,7 @@
  * disagree with the server, which a hand-merged local update eventually will.
  */
 
-import type { CreateDeviceRequest, DeviceDto, PairingCodeDto } from '@francis/shared';
+import type { CreateDeviceRequest, CreatedDeviceResponse, DeviceDto } from '@francis/shared';
 
 export function useDevices() {
   const api = useApi();
@@ -28,15 +28,16 @@ export function useDevices() {
   }
 
   /**
-   * Returns the code rather than storing it.
+   * Returns the secret rather than storing it.
    *
-   * It is shown once and is not retrievable — the server keeps only its hash — so the
-   * caller has to hold it on screen until the admin has finished with it. Putting it in
-   * shared state would be a plaintext credential sitting in the app for as long as the
-   * tab is open.
+   * A pairing code for a screen, the token itself for a voice line — discriminated by
+   * `type`. Either way it is shown once and is not retrievable, since the server keeps
+   * only its hash, so the caller has to hold it on screen until the admin has finished
+   * with it. Putting it in shared state would be a plaintext credential sitting in the
+   * app for as long as the tab is open.
    */
-  async function createDevice(input: CreateDeviceRequest): Promise<PairingCodeDto> {
-    const created = await api<PairingCodeDto>('/devices', { method: 'POST', body: input });
+  async function createDevice(input: CreateDeviceRequest): Promise<CreatedDeviceResponse> {
+    const created = await api<CreatedDeviceResponse>('/devices', { method: 'POST', body: input });
     await refresh();
     return created;
   }

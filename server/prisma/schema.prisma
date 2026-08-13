@@ -34,6 +34,11 @@ enum BarberStatus {
 enum DeviceType {
   KIOSK
   DISPLAY
+  /// The Vapi phone receptionist. A permission, not a label, exactly as the other two
+  /// are — only a KIOSK may join the queue, only a VOICE device may reach the voice
+  /// webhook. It has no screen and nobody to type a pairing code into it, so its token
+  /// is issued directly rather than exchanged; see `createVoiceCredential`.
+  VOICE
 }
 
 enum ScheduleExceptionType {
@@ -145,6 +150,12 @@ model ShopSettings {
 
   walkInQueueEnabled  Boolean @default(true)
   onlineBookingEnabled Boolean @default(true)
+  /// The phone line's own switch, separate from `onlineBookingEnabled` for the same
+  /// reason that one is separate from `walkInQueueEnabled`: a switch that says *online*
+  /// governs the internet, and switching the website off must not silence the telephone.
+  /// `Service.bookableOnline: false` already errors with "has to be booked by phone" —
+  /// so the phone is precisely where those bookings are supposed to land.
+  voiceBookingEnabled Boolean @default(true)
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -464,6 +475,16 @@ model Appointment {
   source AppointmentSource @default(ONLINE)
   notes  String?           @db.Text
 
+  /// When the client ACTUALLY sat down, as opposed to `startAt`, which is when they were
+  /// due to.
+  ///
+  /// The two diverge constantly — a client turns up early, or a cut runs long — and the
+  /// walk-in queue has recorded exactly this distinction since it was built
+  /// (`QueueEntry.startedAt`). Without it the estimator can only reason about the
+  /// timetable, so a chair reads free while somebody is sitting in it: the bug this
+  /// column was added to fix was an appointment booked for 13:30 and started at 10:20.
+  startedAt       DateTime? @db.DateTime(3)
+
   /// Opaque token for the public cancellation link, so appointment ids stay unguessable.
   cancelToken     String    @unique @default(cuid())
   cancelledAt     DateTime? @db.DateTime(3)
@@ -773,6 +794,41 @@ model WebhookEvent {
   @@index([type])
   @@index([processedAt])
   @@map("webhook_events")
+}
+
+/// Idempotency for Vapi tool calls.
+///
+/// A voice model can retry a tool call, and Vapi retries on timeout — both resend the
+/// SAME `toolCall.id`. Without this, a redelivered `book_appointment` re-runs, hits the
+/// overlap check inside the day lock, and comes back "Someone just took that time" — so
+/// the assistant tells the caller their booking failed at the exact moment it succeeded.
+///
+/// Deliberately not `WebhookEvent`: that model is keyed on a non-null unique
+/// `stripeEventId` and typed to Stripe's payload. The ack rule is copied from it though —
+/// see `completedAt`.
+model VoiceToolCall {
+  id String @id @default(cuid())
+  /// Vapi's `toolCall.id`. Unique, which is what makes a redelivery a no-op.
+  toolCallId String @unique
+  /// Vapi's `call.id`, so a row can be traced back to a recording and a transcript.
+  callId String?
+  name   String
+  /// The exact string returned the first time, replayed verbatim on a repeat. The
+  /// caller must hear the same answer, not a second and different one.
+  result  String?  @db.Text
+  isError Boolean  @default(false)
+  /// The ack — on the stamp, NOT on the row existing. An attempt that died mid-handler
+  /// leaves this null and runs again, which is the case retries exist for.
+  completedAt DateTime? @db.DateTime(3)
+  /// What the call touched, when it touched anything. Reading is left blank.
+  entityType String?
+  entityId   String?
+
+  createdAt DateTime @default(now())
+
+  @@index([callId])
+  @@index([createdAt])
+  @@map("voice_tool_calls")
 }
 
 /// Written for every money movement, queue reorder, appointment status change,

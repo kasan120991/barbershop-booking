@@ -36,6 +36,7 @@ export function toAppointmentDto(appointment: AppointmentWithRelations): Appoint
     clientName: publicDisplayName(appointment.client.firstName, appointment.client.lastName),
     startAt: appointment.startAt.toISOString(),
     endAt: appointment.endAt.toISOString(),
+    startedAt: appointment.startedAt?.toISOString() ?? null,
     durationMinutes: appointment.durationMinutes,
     priceCentsTotal: appointment.priceCentsTotal,
     status: appointment.status,

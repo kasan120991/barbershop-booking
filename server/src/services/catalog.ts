@@ -51,6 +51,51 @@ export async function listServiceBarberIds(): Promise<Map<string, string[]>> {
   return grouped;
 }
 
+// --- Barbers -----------------------------------------------------------------
+
+export interface ListBarbersOptions {
+  /** Staff see everyone; the public and the phone see only who is working. */
+  includeInactive: boolean;
+  /** Narrows to barbers who can perform EVERY one of these. */
+  serviceIds?: readonly string[];
+  acceptsOnline?: boolean;
+  acceptsWalkIns?: boolean;
+}
+
+/**
+ * The roster, filtered.
+ *
+ * This existed as an inline Prisma query in `GET /barbers` — the one place business
+ * logic had leaked into a route. It moved here when the voice receptionist needed to ask
+ * the same question, because "who can do this, and are they working" is a shop rule, not
+ * an HTTP concern, and two copies of it would eventually disagree about what `ACTIVE`
+ * means.
+ *
+ * Capability is `AND`-ed rather than `IN`-ed: a barber qualifies only by offering every
+ * service in the basket. `some` per id keeps that one query — an `in` would return
+ * anybody who does *any* of them, which for a cut-and-beard is the wrong roster and
+ * quietly offers a chair that cannot finish the job.
+ */
+export function listBarbers(options: ListBarbersOptions) {
+  const serviceIds = [...new Set(options.serviceIds ?? [])];
+
+  return prisma.barber.findMany({
+    where: {
+      ...(options.includeInactive ? {} : { status: 'ACTIVE' }),
+      ...(options.acceptsOnline === undefined ? {} : { acceptsOnline: options.acceptsOnline }),
+      ...(options.acceptsWalkIns === undefined ? {} : { acceptsWalkIns: options.acceptsWalkIns }),
+      ...(serviceIds.length === 0
+        ? {}
+        : { AND: serviceIds.map((serviceId) => ({ services: { some: { serviceId } } })) }),
+    },
+    orderBy: [{ sortOrder: 'asc' }, { displayName: 'asc' }],
+    include: {
+      services: { select: { serviceId: true } },
+      user: { select: { email: true, firstName: true, lastName: true } },
+    },
+  });
+}
+
 export async function getService(serviceId: string): Promise<ServiceModel> {
   const service = await prisma.service.findUnique({ where: { id: serviceId } });
   if (!service) throw new NotFoundError('Service not found.');
@@ -192,6 +237,9 @@ export async function updateShopSettings(input: UpdateShopSettingsRequest) {
       ...(input.walkInQueueEnabled === undefined
         ? {}
         : { walkInQueueEnabled: input.walkInQueueEnabled }),
+      ...(input.voiceBookingEnabled === undefined
+        ? {}
+        : { voiceBookingEnabled: input.voiceBookingEnabled }),
       ...(input.onlineBookingEnabled === undefined
         ? {}
         : { onlineBookingEnabled: input.onlineBookingEnabled }),

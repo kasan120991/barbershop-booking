@@ -32,7 +32,7 @@ Do not silently redesign around these. If a task seems to require changing one, 
 | Services & hours | Fully shop-controlled — admin owns menu, prices, durations, schedules |
 | Notifications | None in v1 — in-app and on-screen only |
 | Scope | Single location, USD only, no retail product sales |
-| Post-MVP | Vapi AI receptionist will handle front-desk tasks by phone |
+| Voice | Vapi receptionist answers the phone — books, reschedules, cancels, quotes waits |
 
 ---
 
@@ -157,6 +157,23 @@ Settled while building it:
 - **`QueueChairState.freeFrom` is measured before the waiting line is allocated**, so it answers
   "is this barber available" rather than "when does their line run out". Measure it after and a
   barber stands idle beside a card reading *free from 1:44*.
+- **A chair holds two kinds of work, and the board has to know about both.** A walk-in is a
+  `QueueEntry` at `IN_CHAIR`; a booked client is an `Appointment` at `IN_PROGRESS`. The
+  estimator learned appointments only as *scheduled* intervals, so a client who sat down at
+  10:20 for a 13:30 booking left the wall display announcing the barber as **free** while he
+  was visibly cutting hair. `Appointment.startedAt` is the fix — the exact mirror of
+  `QueueEntry.startedAt`, stamped in `updateAppointmentStatus`, and reserved by
+  `QueueChair.occupant` in the same first pass as a seated walk-in.
+- **An occupied chair is held until somebody presses Finish**, for both kinds of work:
+  `max(duration, elapsed)`. A cut running long is still running. The estimate genuinely moves
+  later as it overruns, which is the honest answer rather than churn.
+- **`nowServingEntryId` and `nowServingAppointmentId` stay separate.** The two ids address
+  different tables and are finished by different endpoints; one field would leave a Finish
+  button guessing which to call.
+- **`freeFrom === null` means "done for the day", never "free".** The wall display read it as
+  *Free now* — the exact inverse of the server and of both staff screens. All three now derive
+  their wording from `chairState()` in `shared/src/chair.ts`, which is where the four states
+  live precisely because neither Nuxt app has a test runner to pin them.
 - **The estimator's own input never includes queue time.** It schedules against appointments only;
   `getAvailability` then subtracts both. That ordering is what keeps it a one-way dependency
   instead of the queue rescheduling around itself and walking everyone later on every refresh.
@@ -174,6 +191,86 @@ Settled while building it:
   shop. `now` is threaded through rather than read from the clock, or a booking made against an
   injected clock recomputes against the real one and the test asserts on a different world than
   the code answers about.
+
+---
+
+## The phone receptionist (Vapi)
+
+A caller can book, reschedule, cancel, hear the walk-in wait, and be greeted by name. It is
+the fourth client of the same booking path, not a second one — `createAppointment`,
+`rescheduleAppointment` and `cancelAppointment` still do the writing.
+
+| Area | Decision |
+|---|---|
+| Auth | A `DeviceType.VOICE` device. Vapi sends the token as `x-device-token`, so `req.auth` stays a two-arm union |
+| Switch | `ShopSettings.voiceBookingEnabled`. The phone ignores both *online* switches |
+| Queue | **Quote only.** The assistant reads waits; it cannot put anyone in the line |
+| Identity | Caller ID. Greeted by name, existing booking stated, acted on with no second challenge |
+| Booking flags | `enforceOnlineRules: false`, `enforceMinimumNotice: true` |
+
+Settled while building it:
+
+- **The phone is not the internet.** `Service.bookableOnline: false` errors with *"has to be
+  booked by phone"* and `onlineBookingEnabled: false` says *"please call the shop"* — a caller
+  is doing both. So the phone gets its own switch rather than obeying either, which is the
+  same reasoning that keeps `walkInQueueEnabled` separate from `onlineBookingEnabled`.
+- **`enforceMinimumNotice` stays true.** A phone caller is the public: not standing in the
+  shop, and not seen by the barber. Staff relax the window; an unattended robot does not.
+- **Numbers for the ear, refs for the wire.** The model never says an id. `say` contains only
+  words, times and prices; `options[].ref` carries the machinery. `mappers/voice.test.ts`
+  asserts with a regex that no ISO instant or cuid reaches a spoken string.
+- **Offer refs are unsigned on purpose.** Everything in one is re-validated by
+  `createAppointment` — active barber, prices from `Service` rows, notice window, overlap
+  re-checked inside the day lock — so a forged ref can do nothing plain arguments could not.
+  Signing would add a key to rotate for a property we already have.
+- **Appointment refs are the id, never the `cancelToken`.** The token is a never-expiring
+  bearer credential handed out once; putting it in a third party's call transcripts widens
+  its exposure permanently. Ownership is proven by the calling number instead.
+- **The caller's number always comes from the envelope**, never from a tool argument, so the
+  model has no field in which to name somebody else's. `book_appointment` accepts a spoken
+  one only when the line withheld its own.
+- **One sentence for every identity failure.** Unknown number, someone else's appointment and
+  a ref that does not exist all answer *"I can't find a booking under that number."* — so the
+  tools cannot be walked to discover whether a number is a customer.
+- **Greeting by name is a blessed exception to `recogniseClient`**, which exists precisely so
+  the system never answers "whose number is this?". Caller ID is spoofable; what it buys is a
+  call that starts at the point, what it costs is a first name and a haircut time. Bounded to
+  first name only, upcoming only, and a blocked client is greeted as a stranger.
+- **The webhook always answers 200** when it answered at all, even if every tool in the
+  envelope failed. A non-2xx makes Vapi treat the exchange as failed and the caller hears
+  silence — wrong twice over when one of two calls already committed a booking.
+- **`AppError.expose` decides what is spoken.** An exposed 4xx goes in `result` because those
+  messages are already sentences written for a customer; anything else goes in `error` so a
+  caller never hears a stack frame. Same rule as `errorHandler`, different transport.
+- **`VoiceToolCall` makes mutations idempotent by `toolCall.id`.** Vapi retries on timeout
+  with the same id, and a re-run `book_appointment` hits the day lock and reports "someone
+  just took that time" — telling the caller their booking failed at the moment it succeeded.
+  Ack is on `completedAt`, not on the row existing, copied from `WebhookEvent`.
+- **The wall board is not for the phone.** `/queue/board` is `requireDevice('KIOSK','DISPLAY')`
+  now; a voice token quotes from the caller's own services and never reads the room.
+- **`assistantId: null` on the phone number is load-bearing.** It is what makes Vapi ask the
+  `assistant-request` hook, which is what lets the greeting name the caller. Bound to a static
+  assistant, every caller is a stranger — and the failure is silent, because calls still work.
+- **`[francis-cutz]` prefixes every Vapi resource.** The account is shared with other work;
+  the provisioning script refuses to touch anything without it.
+
+Two things the phone needed that nothing else had, and both are general:
+
+- **`rescheduleAppointment`** did not exist. It keeps the row's id and `cancelToken` — a
+  cancel-and-recreate can cancel then fail to create, breaks the link a client already holds,
+  orphans `Payment.appointmentId`, and double-counts one visit. The staff app got the route
+  too, because the desk must not be able to do less than the phone.
+- **`findNextAvailable`** resolves "any barber" server-side. The booking site fans out in the
+  client; a caller cannot. Every offer still names a barber, because picking a time picks a
+  person.
+
+**`lockBarberDays` must never contain a plain `SELECT`.** In REPEATABLE READ the first
+non-locking read fixes the transaction's snapshot, and `assertNoOverlap` is a non-locking read
+— so a lock-free lookup before the lock makes the overlap check answer from a view of the
+world taken before the competitor committed, and two people are booked into one chair by code
+that looks like it checked. `ensureBarberDayLocks` creates missing rows in its own autocommit
+statement for the same reason it exists at all: `INSERT IGNORE` on an existing row takes a
+shared lock, and upgrading S to X from two transactions at once deadlocks.
 
 ---
 
@@ -197,6 +294,22 @@ Settled while building it:
 - **Everything broadcasts from `refreshQueueEstimates`**, the one function every mutation already
   calls. Emitting from the routes would mean the same line in five handlers, and `POST /queue`
   does not share the others' response helper — so that is exactly the one that would be missed.
+- **Appointments broadcast from `announceAppointmentChange` in `services/booking.ts`**, one
+  level up, not from `refreshQueueEstimates`. Same principle, different choke point: that
+  function also runs for a walk-in join and a call-next, neither of which changed a booking,
+  and it has no appointment in scope to name. Two choke points, one per event, neither in a
+  route.
+- **`appointment:changed` is a signal, not a DTO.** Two of the four mutation sites hold a
+  bare row, and three staff pages read three different ranges — the calendar's day across
+  all chairs, My Day's day or week for one chair, Today's single day. So the server says
+  *what moved* and each client refetches the range it already asked for.
+  `appointmentChangeTouches` in `shared/src/events.ts` is the one interpretation of it.
+- **It carries UTC instants, never local dates.** `cancel` and `updateAppointmentStatus`
+  have no `ShopSettings` in scope, so a local date would cost them a query for a value the
+  client converts back anyway. Both sides compare instants and neither does timezone maths.
+- **It goes to `shop` alone** — not to `kiosk`/`display`, which show the queue and have no
+  book, and not to `barber:{id}` either, since a barber is in `shop` too and would get every
+  change twice.
 - **`realtime/broadcast.ts` holds the socket handle, separately from `realtime/index.ts`**, because
   the server needs to read the queue on connect and the queue service needs to emit. In one file
   that is an import cycle that happens to work until something reorders it.
@@ -229,6 +342,18 @@ Settled while building it:
 - **Cash** is a first-class `Payment` row with `method: CASH` and no Stripe object.
 - **Instant payout** requires a **debit card** as external account, not just a bank. Always show
   the exact fee before confirming.
+- **Apple Pay and Google Pay need the checkout domain registered PER CONNECTED ACCOUNT.**
+  That is specific to direct charges — Stripe's words: "When using direct charges with
+  Stripe Connect, you must configure the domain for each connected account using the API."
+  `automatic_payment_methods` and a Payment Element mounted with `stripeAccount` are not
+  enough on their own; without the registration the wallet buttons simply never render and
+  nothing errors. `registerWalletDomain` in `services/connect.ts` does it, automatically on
+  the charges-enabled transition, with `POST /barbers/:id/connect/wallet-domain` for when
+  the domain itself changes later. No `.well-known` file is needed — Stripe handles Apple's
+  merchant validation behind the scenes, and a sandbox registration comes back
+  `apple_pay: active` immediately. The domain comes from `BOOKING_ORIGIN` and must be public
+  HTTPS, so local development skips it silently rather than registering a host Apple will
+  never validate.
 - **Webhooks:** one endpoint, signature-verified, **raw body**, idempotent by `event.id` persisted
   in `WebhookEvent`. Connected-account events arrive with `event.account` — route by that.
 
@@ -480,7 +605,6 @@ is unreachable, so the suite still passes without MAMP running.
 
 Foundation → server+shared skeleton → schema+seed → auth → catalog & schedules → availability &
 booking → queue → realtime → `app` scaffold → admin views → barber views → `booking` scaffold →
-kiosk → wall display → Stripe Connect → payouts & rent → reporting → deploy →
-*(post-MVP)* Vapi.
+kiosk → wall display → Stripe Connect → payouts & rent → reporting → deploy → Vapi receptionist.
 
 The user directs each phase. Do not jump ahead into a later phase unasked.

@@ -110,6 +110,48 @@ export async function createPairingCode(input: {
 }
 
 /**
+ * Issues a VOICE device its token directly, with no pairing code in between.
+ *
+ * Pairing exists because a tablet cannot be handed a secret over the counter — somebody
+ * carries it to the screen and types it in. The phone line has no screen and nobody
+ * standing at it: the credential goes into Vapi's assistant configuration, by an admin,
+ * from the same browser that asked for it. A code would be created and redeemed by the
+ * same person in the same minute, and in the meantime `pairingCodeHash` would be a live
+ * credential sitting in the database for a device that will never redeem it. Not
+ * creating one is strictly safer than creating one and using it immediately.
+ *
+ * `pairingCodeHash` therefore stays null, which also means `redeemPairingCode` can never
+ * match this row — its lookup is `findUnique({ where: { pairingCodeHash } })`.
+ *
+ * Everything else is deliberately identical to a paired screen: revoking clears the
+ * token outright, deleting refuses until revoked, and both are audited. That sameness is
+ * the whole reason the phone line is a Device rather than a secret in the environment.
+ */
+export async function createVoiceCredential(input: {
+  label: string;
+  createdByUserId: string;
+}): Promise<PairedDevice> {
+  const deviceToken = generateToken();
+
+  const device = await prisma.device.create({
+    data: {
+      label: input.label,
+      type: 'VOICE',
+      tokenHash: hashToken(deviceToken),
+      pairedAt: new Date(),
+      createdByUserId: input.createdByUserId,
+    },
+  });
+
+  return {
+    deviceId: device.id,
+    label: device.label,
+    type: device.type,
+    deviceToken,
+  };
+}
+
+/**
  * Exchanges a pairing code for a device token.
  *
  * Single-use is enforced by clearing `pairingCodeHash` in the same update that sets

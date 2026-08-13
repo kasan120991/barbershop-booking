@@ -9,3 +9,4 @@ export * from './payouts.js';
 export * from './queue.js';
 export * from './rent.js';
 export * from './schedule.js';
+export * from './voice.js';

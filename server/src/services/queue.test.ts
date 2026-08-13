@@ -14,6 +14,7 @@ import { describe, expect, it } from 'vitest';
 import {
   assignQueue,
   type AssignQueueInput,
+  type ChairOccupant,
   type QueueCandidate,
   type QueueChair,
 } from './queue.js';
@@ -343,7 +344,15 @@ describe('chairs that are already busy', () => {
     });
 
     expect(result.chairs).toEqual([
-      { barberId: 'marcus', nowServingEntryId: 'seated', freeFrom: at('10:45'), waitingCount: 0 },
+      {
+        barberId: 'marcus',
+        nowServingEntryId: 'seated',
+        // Null, and asserted rather than omitted: a walk-in is not an appointment, and
+        // the two ids come from different tables.
+        nowServingAppointmentId: null,
+        freeFrom: at('10:45'),
+        waitingCount: 0,
+      },
     ]);
   });
 });
@@ -600,5 +609,168 @@ describe('the next opening for a walk-up', () => {
 
       expect(run(input).walkUp).toEqual(run(input).walkUp);
     });
+  });
+});
+
+describe('a booked client in the chair', () => {
+  /** A client actually sitting down, as opposed to a slot on the timetable. */
+  function occupant(overrides: Partial<ChairOccupant> = {}): ChairOccupant {
+    return {
+      appointmentId: 'appt-1',
+      firstName: 'Marcus',
+      startedAt: at('10:00'),
+      durationMinutes: 30,
+      ...overrides,
+    };
+  }
+
+  /**
+   * The reported bug, reduced.
+   *
+   * An appointment booked for 13:30 whose client sat down at 10:20. The timetable says the
+   * chair is free until 13:30, so the wall display read "Free now" at a barber who was
+   * visibly cutting hair. Only `startedAt` knows otherwise.
+   *
+   * This test fails on the code that shipped the bug.
+   */
+  it('is busy when the client sat down early, whatever the timetable says', () => {
+    const estimate = assignQueue({
+      now: at('10:20'),
+      bufferMinutes: 5,
+      // 13:30–14:00 is booked, so `free` has a hole there — and a wide gap before it.
+      chairs: [
+        chair({
+          free: [
+            { start: at('10:00'), end: at('13:30') },
+            { start: at('14:05'), end: at('18:00') },
+          ],
+          occupant: occupant({ startedAt: at('10:20') }),
+        }),
+      ],
+      entries: [],
+    });
+
+    const state = estimate.chairs[0];
+    // 10:20 + 30 minutes + a 5 minute turnaround.
+    expect(local(state?.freeFrom ?? null)).toBe('10:55');
+    expect(state?.nowServingAppointmentId).toBe('appt-1');
+    // Not a walk-in, and it must never be mistaken for one.
+    expect(state?.nowServingEntryId).toBeNull();
+  });
+
+  /**
+   * The decision taken with the shop: a cut still going is still going.
+   *
+   * Freeing the chair at the scheduled finish would put "Free now" on the glass while the
+   * barber is mid-cut — the same lie the whole fix exists to remove, arriving thirty
+   * minutes later.
+   */
+  it('stays busy past the expected finish, until somebody presses Finish', () => {
+    const estimate = assignQueue({
+      now: at('14:20'),
+      bufferMinutes: 5,
+      chairs: [
+        chair({
+          free: [{ start: at('10:00'), end: at('18:00') }],
+          occupant: occupant({ startedAt: at('13:30'), durationMinutes: 30 }),
+        }),
+      ],
+      entries: [],
+    });
+
+    // 14:00 came and went; the chair is held to now plus the turnaround, not to 14:00.
+    expect(local(estimate.chairs[0]?.freeFrom ?? null)).toBe('14:25');
+  });
+
+  it('frees the chair the moment the appointment is no longer in progress', () => {
+    // No occupant is what "somebody pressed Finish" looks like to this function.
+    const estimate = assignQueue({
+      now: at('14:20'),
+      bufferMinutes: 5,
+      chairs: [chair({ free: [{ start: at('10:00'), end: at('18:00') }] })],
+      entries: [],
+    });
+
+    expect(local(estimate.chairs[0]?.freeFrom ?? null)).toBe('14:20');
+    expect(estimate.chairs[0]?.nowServingAppointmentId).toBeNull();
+  });
+
+  it('makes a waiting walk-in queue behind the booked client', () => {
+    const estimate = assignQueue({
+      now: at('10:20'),
+      bufferMinutes: 5,
+      chairs: [chair({ occupant: occupant({ startedAt: at('10:20') }) })],
+      entries: [candidate({ id: 'w1', barberId: 'marcus' })],
+    });
+
+    // The chair is held to 10:55, so the walk-in is seated then rather than immediately.
+    expect(local(estimate.assignments[0]?.estimatedReadyAt ?? null)).toBe('10:55');
+  });
+
+  it('never puts the booked client in the line', () => {
+    const estimate = assignQueue({
+      now: at('10:20'),
+      bufferMinutes: 0,
+      chairs: [chair({ occupant: occupant() })],
+      entries: [candidate({ id: 'w1', barberId: 'marcus' })],
+    });
+
+    // One assignment, and it is the walk-in's. A client who booked weeks ago must never
+    // be numbered into today's walk-in queue.
+    expect(estimate.assignments).toHaveLength(1);
+    expect(estimate.assignments[0]?.entryId).toBe('w1');
+    expect(estimate.assignments[0]?.position).toBe(1);
+  });
+
+  it('tracks a walk-in and a booked client on the same chair independently', () => {
+    const estimate = assignQueue({
+      now: at('10:20'),
+      bufferMinutes: 0,
+      chairs: [chair({ occupant: occupant() })],
+      entries: [
+        candidate({ id: 'seated', barberId: 'marcus', status: 'IN_CHAIR', startedAt: at('10:10') }),
+      ],
+    });
+
+    const state = estimate.chairs[0];
+    expect(state?.nowServingEntryId).toBe('seated');
+    expect(state?.nowServingAppointmentId).toBe('appt-1');
+  });
+});
+
+describe('a walk-in who has overrun', () => {
+  /**
+   * The same rule as a booked client, in the other table.
+   *
+   * Left alone, a seated walk-in freed its chair at `startedAt + duration` whether or not
+   * anybody had finished them — so an overrunning cut read as free on exactly the screen
+   * the shop is looking at.
+   */
+  it('holds the chair until they are actually finished', () => {
+    const estimate = assignQueue({
+      now: at('11:00'),
+      bufferMinutes: 5,
+      chairs: [chair()],
+      entries: [
+        candidate({ id: 'slow', barberId: 'marcus', status: 'IN_CHAIR', startedAt: at('10:00') }),
+      ],
+    });
+
+    // A 30-minute cut that began at 10:00 is an hour old. The chair is held to now.
+    expect(local(estimate.chairs[0]?.freeFrom ?? null)).toBe('11:05');
+  });
+
+  it('still frees on time when the cut is running to plan', () => {
+    const estimate = assignQueue({
+      now: at('10:10'),
+      bufferMinutes: 5,
+      chairs: [chair()],
+      entries: [
+        candidate({ id: 'ontime', barberId: 'marcus', status: 'IN_CHAIR', startedAt: at('10:00') }),
+      ],
+    });
+
+    // Ten minutes into a thirty minute cut: unchanged from before, 10:30 plus turnaround.
+    expect(local(estimate.chairs[0]?.freeFrom ?? null)).toBe('10:35');
   });
 });

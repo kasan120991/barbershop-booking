@@ -26,7 +26,6 @@ import { Router } from 'express';
 
 import type { Role } from '../generated/prisma/enums.js';
 import { pathParam } from '../lib/http.js';
-import { prisma } from '../lib/prisma.js';
 import {
   toBarberPublicDto,
   toBarberStaffDto,
@@ -44,6 +43,7 @@ import {
   getService,
   getShopHours,
   getShopSettings,
+  listBarbers,
   listClosures,
   listServiceBarberIds,
   listServices,
@@ -155,14 +155,13 @@ catalogRouter.put('/services/:serviceId/barbers', adminOnly, async (req, res) =>
 catalogRouter.get('/barbers', async (req, res) => {
   const isStaff = req.auth?.kind === 'user';
 
-  const barbers = await prisma.barber.findMany({
-    where: isStaff ? {} : { status: 'ACTIVE' },
-    orderBy: [{ sortOrder: 'asc' }, { displayName: 'asc' }],
-    include: {
-      services: { select: { serviceId: true } },
-      user: { select: { email: true, firstName: true, lastName: true } },
-    },
-  });
+  /**
+   * Deliberately NOT filtered on `acceptsOnline` — the kiosk reads this same endpoint
+   * and needs the walk-in-only chairs. The list stays complete, the client filters for
+   * display, and the server refuses at write time. Display is a courtesy; the write
+   * check is the boundary.
+   */
+  const barbers = await listBarbers({ includeInactive: isStaff });
 
   const body = barbers.map((barber) => {
     const serviceIds = barber.services.map((row) => row.serviceId);

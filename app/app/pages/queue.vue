@@ -28,6 +28,7 @@
 
 import EllipsisIcon from '@primeicons/vue/ellipsis-v';
 import {
+  chairState,
   formatCents,
   formatDuration,
   formatPhone,
@@ -121,11 +122,6 @@ const chairs = computed(() =>
       (entry) => entry.status === 'WAITING' && entry.assignedBarberId === chair.barberId,
     );
 
-    const freeSoon =
-      chair.freeFrom !== null &&
-      asOf.value !== null &&
-      new Date(chair.freeFrom).getTime() - asOf.value < 60_000;
-
     return {
       ...chair,
       serving,
@@ -166,12 +162,29 @@ const chairs = computed(() =>
                   100,
               ),
             ),
-      state:
-        chair.freeFrom === null
-          ? 'Done for the day'
-          : freeSoon
-            ? 'Chair is open'
-            : `Free from ${clock(chair.freeFrom)}`,
+      /**
+       * Through the shared states, so the desk, the wall and a barber's phone cannot
+       * describe one chair three different ways — which is exactly what happened when the
+       * wall read a null `freeFrom` as "Free now" and this screen read it as the opposite.
+       */
+      state: (() => {
+        switch (
+          chairState({
+            occupied: Boolean(chair.nowServingEntryId ?? chair.nowServingAppointmentId),
+            freeFrom: chair.freeFrom,
+            asOf: asOf.value,
+          })
+        ) {
+          case 'OCCUPIED':
+            return 'In the chair';
+          case 'DONE_FOR_THE_DAY':
+            return 'Done for the day';
+          case 'OPEN_NOW':
+            return 'Chair is open';
+          default:
+            return `Free from ${clock(chair.freeFrom ?? '')}`;
+        }
+      })(),
     };
   }),
 );

@@ -21,7 +21,7 @@
  *   browser's clock. Same rule as `/queue`.
  */
 
-import type { AppointmentDto } from '@francis/shared';
+import type { AppointmentChanged, AppointmentDto } from '@francis/shared';
 
 /** Statuses that still occupy the chair. Mirrors `BLOCKING` in `services/booking.ts`. */
 export const LIVE_APPOINTMENT_STATUSES = ['BOOKED', 'IN_PROGRESS'] as const;
@@ -34,6 +34,26 @@ export function useAppointments() {
 
   const appointments = useState<AppointmentDto[]>('appointments:list', () => []);
   const loading = useState<boolean>('appointments:loading', () => false);
+
+  /**
+   * The last change the server announced, or null.
+   *
+   * A signal, and deliberately not a patch of `appointments`. Three pages read that one
+   * list through three different ranges, so a push-assign like the queue's would be right
+   * for whichever page happened to be open and quietly wrong for the other two. Each page
+   * watches this and refetches the range it asked for; `appointmentChangeTouches` decides
+   * whether it has to.
+   *
+   * Note the two convergent paths: a mutation made HERE patches in place through
+   * `replace()`, because somebody who just cancelled an appointment must not wait for a
+   * round trip to see it. This signal is for everybody else's writes — another admin at
+   * the desk, a client online, the phone.
+   *
+   * `useState` rather than a `ref` for the same reason as the list: the socket is owned by
+   * the shell and the watchers live in pages, and separate copies would mean the handler
+   * writing to a signal nobody is listening to.
+   */
+  const lastChange = useState<AppointmentChanged | null>('appointments:change', () => null);
 
   /**
    * `quiet` exists for the same reason it does on the queue: a refresh triggered behind
@@ -89,5 +109,5 @@ export function useAppointments() {
     replace(response.appointment);
   }
 
-  return { appointments, loading, loadRange, setStatus, cancel };
+  return { appointments, loading, lastChange, loadRange, setStatus, cancel };
 }

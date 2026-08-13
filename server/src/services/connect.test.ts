@@ -10,7 +10,7 @@
 import { CONNECT_STATE } from '@francis/shared';
 import { describe, expect, it } from 'vitest';
 
-import { deriveConnectState } from './connect.js';
+import { deriveConnectState, walletDomainName } from './connect.js';
 
 const ACCOUNT = 'acct_test_123';
 
@@ -59,5 +59,45 @@ describe('deriveConnectState', () => {
     expect(deriveConnectState(ACCOUNT, { chargesEnabled: true, detailsSubmitted: true })).toBe(
       CONNECT_STATE.READY,
     );
+  });
+});
+
+describe('walletDomainName', () => {
+  /**
+   * The gate that decides whether Apple Pay and Google Pay are even attempted.
+   *
+   * Both wallets require a publicly reachable HTTPS host, so getting this wrong fails in
+   * one of two quiet ways: registering a host Stripe will never validate, or skipping a
+   * perfectly good one and leaving the buttons hidden with no error anywhere.
+   */
+  it('accepts a real HTTPS host', () => {
+    expect(walletDomainName('https://book.franciscutz.com')).toBe('book.franciscutz.com');
+    expect(walletDomainName('https://book.franciscutz.com/pay')).toBe('book.franciscutz.com');
+  });
+
+  it('accepts an HTTPS tunnel, which is what makes this testable before launch', () => {
+    expect(walletDomainName('https://losing-tess.ngrok-free.dev')).toBe('losing-tess.ngrok-free.dev');
+  });
+
+  it('refuses plain HTTP, however public the host', () => {
+    // Apple Pay will not run in an insecure context, so registering this would create a
+    // domain that never validates and a button that never appears.
+    expect(walletDomainName('http://book.franciscutz.com')).toBeNull();
+  });
+
+  it('refuses everything local development actually uses', () => {
+    expect(walletDomainName('http://localhost:3001')).toBeNull();
+    expect(walletDomainName('https://localhost:3001')).toBeNull();
+    // The LAN address this shop's own dev config carries.
+    expect(walletDomainName('http://192.168.1.175:3001')).toBeNull();
+    expect(walletDomainName('https://192.168.1.175:3001')).toBeNull();
+    expect(walletDomainName('https://shop-mac.local')).toBeNull();
+  });
+
+  it('refuses anything unparseable rather than throwing', () => {
+    // This runs inside onboarding. A malformed env var must not take a barber's payout
+    // setup down with it.
+    expect(walletDomainName('')).toBeNull();
+    expect(walletDomainName('not a url')).toBeNull();
   });
 });

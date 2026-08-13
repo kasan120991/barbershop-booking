@@ -79,6 +79,41 @@ const envSchema = z.object({
    * Must be a test key (`sk_test_`/`rk_test_`) unless NODE_ENV is production — see
    * the refinement below.
    */
+  /**
+   * Vapi — the phone receptionist.
+   *
+   * All optional, and the server boots and the whole suite passes with none of them set.
+   * The RUNTIME path needs none at all: the webhook only ever *receives*, and it
+   * authenticates the caller with a device token, which is a database row rather than an
+   * environment variable. That is deliberate — the phone line's credential is issued from
+   * the admin screen and lives in Vapi's own config, so a redeploy cannot leak it and
+   * revoking it is one click rather than a release.
+   *
+   * `VAPI_API_KEY` is used by `scripts/provision-vapi.ts` only, and `lib/vapi.ts` throws a
+   * named error the first time it is needed without one.
+   */
+  VAPI_API_KEY: z.string().min(1).optional(),
+
+  /**
+   * The assistant answered with on an `assistant-request`. Unset means the webhook answers
+   * an empty 200 and Vapi falls back to whatever the number is bound to — so a missing
+   * value degrades to "no greeting by name", never to a dropped call.
+   */
+  VAPI_ASSISTANT_ID: z.string().min(1).optional(),
+
+  /** Provisioning only. Set once the script has bound a number. */
+  VAPI_PHONE_NUMBER_ID: z.string().min(1).optional(),
+
+  /**
+   * The PUBLIC origin Vapi reaches this server on, written into the assistant's tool
+   * `server.url` by the provisioning script — a tunnel in development, the deployed host
+   * in production.
+   *
+   * Separate from APP_ORIGIN and BOOKING_ORIGIN, which answer "where do I send a person".
+   * This one answers "where does a machine call us back".
+   */
+  VAPI_SERVER_URL: z.url().optional(),
+
   STRIPE_SECRET_KEY: z.string().min(1).optional(),
 
   /**

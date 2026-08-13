@@ -25,6 +25,12 @@ export type BarberStatus = (typeof BARBER_STATUS)[keyof typeof BARBER_STATUS];
 export const DEVICE_TYPE = {
   KIOSK: 'KIOSK',
   DISPLAY: 'DISPLAY',
+  /**
+   * The Vapi phone receptionist. A permission, not a label, exactly as the other two
+   * are — only a KIOSK may join the queue, only a VOICE device may reach the voice
+   * webhook, and the discriminated union refuses the rest at the type level.
+   */
+  VOICE: 'VOICE',
 } as const;
 export type DeviceType = (typeof DEVICE_TYPE)[keyof typeof DEVICE_TYPE];
 

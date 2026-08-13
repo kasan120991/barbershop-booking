@@ -45,6 +45,24 @@ import {
 
 // --- The estimator (pure) ----------------------------------------------------
 
+/**
+ * A booked client actually sitting in the chair right now. **Never a queue entry.**
+ *
+ * The chair holds two kinds of work and they live in different tables: a walk-in is a
+ * `QueueEntry` at IN_CHAIR and arrives as an entry, a booked client is an `Appointment` at
+ * IN_PROGRESS and arrives here. Modelling this one as a synthetic entry was the obvious
+ * shortcut and is wrong — it has no position, it is not in the line, and anything that
+ * numbered it would put a client who booked weeks ago at the top of the walk-in queue.
+ */
+export interface ChairOccupant {
+  appointmentId: string;
+  /** First name only. This reaches a screen facing the whole room. */
+  firstName: string;
+  /** When they ACTUALLY sat down, not when they were due — that is the whole point. */
+  startedAt: Date;
+  durationMinutes: number;
+}
+
 export interface QueueChair {
   barberId: string;
   /** Tiebreak when two chairs free up at the same instant, so the board is stable. */
@@ -53,6 +71,15 @@ export interface QueueChair {
   serviceIds: readonly string[];
   /** Free stretches today, already minus booked appointments and the buffer. */
   free: readonly Interval[];
+  /**
+   * A booked client in the chair this moment, or null.
+   *
+   * Appointments already reach `free` as their SCHEDULED windows. This is the separate
+   * fact that one of them is happening *now* — which the schedule cannot express, because
+   * a client who turns up three hours early is in the chair at a time the timetable says
+   * is free.
+   */
+  occupant?: ChairOccupant | null;
 }
 
 export interface QueueCandidate {
@@ -81,7 +108,16 @@ export interface QueueAssignment {
 
 export interface QueueChairState {
   barberId: string;
+  /** A walk-in in the chair. Always a `QueueEntry` id — see `nowServingAppointmentId`. */
   nowServingEntryId: string | null;
+  /**
+   * A booked client in the chair. Always an `Appointment` id.
+   *
+   * Kept separate from `nowServingEntryId` rather than collapsed into one field: the two
+   * come from different tables and take different endpoints to finish, so a single id
+   * would leave every consumer guessing which one it held.
+   */
+  nowServingAppointmentId: string | null;
   /**
    * When this barber is next free, or null if they are done for the day.
    *
@@ -162,7 +198,9 @@ interface ChairState {
   sortOrder: number;
   serviceIds: Set<string>;
   free: Interval[];
+  occupant: ChairOccupant | null;
   nowServingEntryId: string | null;
+  nowServingAppointmentId: string | null;
   waitingCount: number;
   /** Snapshotted once the chair's current occupant is accounted for. */
   freeFrom: Date | null;
@@ -205,7 +243,9 @@ export function assignQueue(input: AssignQueueInput): QueueEstimate {
         free: intersectIntervals(mergeIntervals(chair.free), [
           { start: input.now, end: END_OF_TIME },
         ]),
+        occupant: chair.occupant ?? null,
         nowServingEntryId: null,
+        nowServingAppointmentId: null,
         waitingCount: 0,
         freeFrom: null,
       },
@@ -214,6 +254,34 @@ export function assignQueue(input: AssignQueueInput): QueueEstimate {
 
   const ordered = [...input.entries].sort(boardOrder);
   const assignments = new Map<string, QueueAssignment>();
+
+  /**
+   * A booked client in the chair, before anything else.
+   *
+   * Appointments already reach `chair.free` as their scheduled windows, and that is not
+   * enough: the bug this exists to fix was a cut booked for 13:30 and started at 10:20,
+   * where the timetable said the chair was free for three more hours while somebody sat
+   * in it. Only `startedAt` knows otherwise.
+   */
+  for (const chair of chairs.values()) {
+    const occupant = chair.occupant;
+    if (!occupant) continue;
+
+    /**
+     * Held for its own duration, or until now, whichever is longer.
+     *
+     * An appointment only reaches this function while it is IN_PROGRESS, so reserving
+     * through `now` is what makes "busy until somebody presses Finish" true without the
+     * estimator needing to predict anything. The scheduled duration is the floor, not the
+     * ceiling: a thirty-minute cut that began ten minutes ago holds the chair for twenty
+     * more, and one that has already overrun holds it until it actually ends.
+     */
+    const elapsedMs = input.now.getTime() - occupant.startedAt.getTime();
+    const heldMs = Math.max(occupant.durationMinutes * 60_000, elapsedMs);
+
+    reserve(chair, occupant.startedAt, heldMs, bufferMs);
+    chair.nowServingAppointmentId = occupant.appointmentId;
+  }
 
   /**
    * Anyone already called or in the chair is consuming their barber's time right now,
@@ -228,7 +296,19 @@ export function assignQueue(input: AssignQueueInput): QueueEstimate {
     const start = entry.status === QUEUE_STATUS.IN_CHAIR ? (entry.startedAt ?? input.now) : input.now;
 
     if (chair) {
-      reserve(chair, start, entry.durationMinutes * 60_000, bufferMs);
+      /**
+       * The same floor as a booked client above: a seated walk-in holds the chair for at
+       * least as long as they have already been in it. Without this a cut that overran
+       * frees its chair on the board while the barber is still working, which is the same
+       * lie in a different table.
+       *
+       * A CALLED entry is measured from `now` and has no elapsed time, so this is a no-op
+       * for them.
+       */
+      const elapsedMs = input.now.getTime() - start.getTime();
+      const heldMs = Math.max(entry.durationMinutes * 60_000, elapsedMs);
+
+      reserve(chair, start, heldMs, bufferMs);
       if (entry.status === QUEUE_STATUS.IN_CHAIR) chair.nowServingEntryId = entry.id;
     }
 
@@ -365,6 +445,7 @@ export function assignQueue(input: AssignQueueInput): QueueEstimate {
     chairs: [...chairs.values()].map((chair) => ({
       barberId: chair.barberId,
       nowServingEntryId: chair.nowServingEntryId,
+      nowServingAppointmentId: chair.nowServingAppointmentId,
       freeFrom: chair.freeFrom,
       waitingCount: chair.waitingCount,
     })),
@@ -470,11 +551,55 @@ export async function getQueueBoard(query: QueueBoardQuery = {}) {
   const barbers = [...walkInBarbers, ...strandedBarbers];
   const today = DateTime.fromJSDate(now).setZone(settings.timezone).toFormat('yyyy-MM-dd');
 
-  const snapshots = await loadDaySnapshots(
-    barbers.map((barber) => barber.id),
-    today,
-    settings.timezone,
-  );
+  const barberIds = barbers.map((barber) => barber.id);
+
+  /**
+   * Who is in each chair on a booked appointment right now.
+   *
+   * A separate read rather than a widening of `loadDaySnapshots`, which is shared with the
+   * availability engine and deliberately selects only the three columns that engine needs.
+   * This one wants the client's first name and the actual `startedAt`, and only for the
+   * handful of rows that are IN_PROGRESS — pushing that onto every availability lookup
+   * would make a booking form pay for a wall display's question.
+   *
+   * No time filter: an appointment is in the chair because somebody pressed Start, not
+   * because the clock agrees. The one that exposed this bug was booked for 13:30 and
+   * started at 10:20, and a `today`-shaped window would have found it only by luck.
+   */
+  const [snapshots, seated] = await Promise.all([
+    loadDaySnapshots(barberIds, today, settings.timezone),
+    prisma.appointment.findMany({
+      where: { barberId: { in: barberIds }, status: 'IN_PROGRESS' },
+      select: {
+        id: true,
+        barberId: true,
+        startedAt: true,
+        startAt: true,
+        durationMinutes: true,
+        client: { select: { firstName: true } },
+      },
+      orderBy: { startedAt: 'asc' },
+    }),
+  ]);
+
+  /**
+   * One occupant per chair. A barber cutting two people at once is not a thing, and if
+   * the data ever says so the earliest start is the one actually in progress.
+   *
+   * `startedAt ?? startAt` is the fallback for a row that predates the column and escaped
+   * the migration's backfill: the scheduled time is a worse answer than the real one but a
+   * far better answer than none, which is what put the chair on the board as free.
+   */
+  const occupants = new Map<string, ChairOccupant>();
+  for (const appointment of seated) {
+    if (occupants.has(appointment.barberId)) continue;
+    occupants.set(appointment.barberId, {
+      appointmentId: appointment.id,
+      firstName: appointment.client.firstName.trim(),
+      startedAt: appointment.startedAt ?? appointment.startAt,
+      durationMinutes: appointment.durationMinutes,
+    });
+  }
 
   const chairs: QueueChair[] = barbers.map((barber) => {
     const snapshot = snapshots.get(barber.id);
@@ -504,6 +629,7 @@ export async function getQueueBoard(query: QueueBoardQuery = {}) {
       sortOrder: barber.sortOrder,
       serviceIds: barber.services.map((row) => row.serviceId),
       free,
+      occupant: occupants.get(barber.id) ?? null,
     };
   });
 
@@ -542,6 +668,13 @@ export async function getQueueBoard(query: QueueBoardQuery = {}) {
     chairs: estimate.chairs.map((chair) => ({
       ...chair,
       displayName: nameById.get(chair.barberId) ?? 'Unknown',
+      /**
+       * The booked client behind `nowServingAppointmentId`, so the mappers can name them
+       * without a second query. Both mappers redact it themselves rather than one reusing
+       * the other's string — which is what keeps a surname off a screen facing the room
+       * by construction rather than by remembering.
+       */
+      occupant: occupants.get(chair.barberId) ?? null,
     })),
     entries: entries.map((entry) => {
       const assignment = byId.get(entry.id) ?? null;

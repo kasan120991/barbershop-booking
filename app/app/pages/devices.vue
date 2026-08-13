@@ -1,17 +1,24 @@
 <script setup lang="ts">
 /**
- * Paired screens.
+ * Paired screens, and the phone line.
  *
  * This page exists because without it the kiosk cannot be paired at all — the pairing
  * endpoint has been live since the auth phase with no way to reach it except curl.
  *
- * The pairing code is the only moment in the flow a human handles a credential, and it
- * is shown exactly once. So the dialog switches to displaying it rather than closing on
+ * The secret is the only moment in the flow a human handles a credential, and it is
+ * shown exactly once. So the dialog switches to displaying it rather than closing on
  * success: closing would destroy the one thing the admin came here for, and the server
  * keeps only its hash.
+ *
+ * Two kinds of secret, discriminated by `type`. A screen gets a pairing code that
+ * expires in fifteen minutes and is exchanged for a token by the tablet. A voice line
+ * gets the token itself, because there is no screen at the other end to type anything
+ * in — so it never expires, and the only way to stop it is to revoke it. The handover
+ * has to say which it is handing over, or an admin pastes a code into Vapi and waits
+ * for a phone that never rings.
  */
 
-import { createDeviceRequestSchema, type PairingCodeDto } from '@francis/shared';
+import { createDeviceRequestSchema, type CreatedDeviceResponse } from '@francis/shared';
 
 useHead({ title: 'Screens — Francis Cutz' });
 
@@ -25,7 +32,7 @@ const dialogOpen = ref(false);
 const saving = ref(false);
 const fieldErrors = ref<Record<string, string[]>>({});
 /** Non-null while the handover screen is up. */
-const issued = ref<PairingCodeDto | null>(null);
+const issued = ref<CreatedDeviceResponse | null>(null);
 const busyId = ref<string | null>(null);
 
 const form = reactive({ label: '', type: 'KIOSK' as string });
@@ -33,7 +40,26 @@ const form = reactive({ label: '', type: 'KIOSK' as string });
 const TYPES = [
   { value: 'KIOSK', label: 'Kiosk', hint: 'Clients join the queue on it. Sits by the door.' },
   { value: 'DISPLAY', label: 'Wall Display', hint: 'Shows the board only. Cannot add anyone.' },
+  {
+    value: 'VOICE',
+    label: 'Phone Line',
+    hint: 'The receptionist that answers the phone. Books, moves and cancels.',
+  },
 ];
+
+const TYPE_NAMES: Record<string, string> = {
+  KIOSK: 'Kiosk',
+  DISPLAY: 'Wall display',
+  VOICE: 'Phone line',
+};
+
+/** The handover differs by kind, and so does everything the admin does next. */
+const issuedVoice = computed(() =>
+  issued.value !== null && issued.value.type === 'VOICE' ? issued.value : null,
+);
+const issuedCode = computed(() =>
+  issued.value !== null && issued.value.type !== 'VOICE' ? issued.value : null,
+);
 
 watch(dialogOpen, (open) => {
   if (!open) return;
@@ -54,8 +80,9 @@ onUnmounted(() => {
 });
 
 const expiresIn = computed(() => {
-  if (!issued.value) return null;
-  const seconds = Math.max(0, Math.round((Date.parse(issued.value.expiresAt) - now.value) / 1000));
+  const code = issuedCode.value;
+  if (!code) return null;
+  const seconds = Math.max(0, Math.round((Date.parse(code.expiresAt) - now.value) / 1000));
   const minutes = Math.floor(seconds / 60);
   return { seconds, label: `${String(minutes)}:${String(seconds % 60).padStart(2, '0')}` };
 });
@@ -80,10 +107,15 @@ async function onCreate() {
   }
 }
 
-function onRevoke(device: { id: string; label: string }) {
+function onRevoke(device: { id: string; label: string; type: string }) {
+  const isVoice = device.type === 'VOICE';
   confirm.require({
-    header: 'Revoke this screen',
-    message: `${device.label} will stop working immediately, and it cannot be paired again — you would add a new screen instead.`,
+    header: isVoice ? 'Revoke this phone line' : 'Revoke this screen',
+    // Worth saying plainly for a voice line: the consequence is not a dark tablet in
+    // the corner, it is the shop's phone assistant refusing every caller.
+    message: isVoice
+      ? `${device.label} will stop answering immediately, and its token cannot be restored — you would add a new line and paste a fresh token into Vapi.`
+      : `${device.label} will stop working immediately, and it cannot be paired again — you would add a new screen instead.`,
     acceptLabel: 'Revoke',
     rejectLabel: 'Keep It',
     acceptProps: { severity: 'danger' },
@@ -164,7 +196,7 @@ function when(value: string | null): string {
       >
         <span class="cell">
           <span class="name">{{ device.label }}</span>
-          <span class="meta">{{ device.type === 'KIOSK' ? 'Kiosk' : 'Wall display' }}</span>
+          <span class="meta">{{ TYPE_NAMES[device.type] ?? device.type }}</span>
         </span>
 
         <span class="cell">
@@ -207,24 +239,40 @@ function when(value: string | null): string {
 
     <p v-else class="empty">
       No screens yet. Add one, then type its code into the tablet at
-      <code>/kiosk</code> on the booking site.
+      <code>/kiosk</code> on the booking site — or add a phone line for the receptionist.
     </p>
 
     <Dialog
       :visible="dialogOpen"
-      :header="issued ? 'Pair the Screen' : 'Add Screen'"
+      :header="issuedVoice ? 'Copy the Token' : issued ? 'Pair the Screen' : 'Add Screen'"
       modal
       :style="{ width: 'min(30rem, 94vw)' }"
       @update:visible="dialogOpen = $event"
     >
       <!-- The handover. Shown once and never retrievable — the server keeps a hash. -->
-      <div v-if="issued" class="done">
+      <div v-if="issuedVoice" class="done">
+        <p class="done-lede">
+          Paste this into the assistant's <strong>server.headers</strong> in Vapi, as
+          <strong>x-device-token</strong>.
+        </p>
+
+        <div class="code token">
+          <code>{{ issuedVoice.deviceToken }}</code>
+        </div>
+
+        <Message severity="warn" :closable="false">
+          This is shown once and cannot be read again. It does not expire — if it is lost
+          or leaked, revoke this line and add a new one.
+        </Message>
+      </div>
+
+      <div v-else-if="issuedCode" class="done">
         <p class="done-lede">
           Open <strong>/kiosk</strong> on the tablet and type this in.
         </p>
 
         <div class="code">
-          <code>{{ issued.pairingCode }}</code>
+          <code>{{ issuedCode.pairingCode }}</code>
         </div>
 
         <Message v-if="expiresIn && expiresIn.seconds > 0" severity="info" :closable="false">
@@ -275,7 +323,11 @@ function when(value: string | null): string {
             variant="text"
             @click="dialogOpen = false"
           />
-          <Button label="Get a Code" :loading="saving" @click="onCreate" />
+          <Button
+            :label="form.type === 'VOICE' ? 'Issue a Token' : 'Get a Code'"
+            :loading="saving"
+            @click="onCreate"
+          />
         </template>
       </template>
     </Dialog>
@@ -462,6 +514,25 @@ function when(value: string | null): string {
   font-weight: 700;
   letter-spacing: 0.12em;
   color: var(--fc-accent);
+}
+
+/**
+ * A device token is 43 characters of base64url, not an eight-digit code. At the code's
+ * size it would overflow the dialog; and it is read by selecting rather than by eye, so
+ * it wants to be legible and wrappable rather than large.
+ */
+.token {
+  padding: 0.9rem;
+  text-align: left;
+}
+
+.token code {
+  font-size: 0.95rem;
+  font-weight: 500;
+  letter-spacing: 0;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+  user-select: all;
 }
 
 .fc-num {
