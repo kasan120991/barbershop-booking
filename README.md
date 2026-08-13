@@ -5,15 +5,20 @@ Booking, walk-in queue, point of sale, and barber payouts for the Francis Cutz b
 Barbers rent a booth, keep 100% of every cut, and cash out their own card earnings daily. Clients
 book online or walk in and join a live queue on the shop tablet.
 
-<!-- SCREENSHOT SLOT
-     Capture two or three screenshots and drop them in docs/screenshots/, then uncomment:
+![The wall display — three chairs in use and the walk-in line, read from across the shop](docs/screenshots/display-board.png)
 
-     ![Public booking](docs/screenshots/booking.png)
-     ![In-shop kiosk queue](docs/screenshots/kiosk.png)
+The wall board. Names are cut to a first name and a last initial before they ever leave the
+server, because this screen faces the room — the staff app below gets the full record over a
+different socket event.
 
-     Run `pnpm dev` with seeded demo data and shoot at 1440×900. The kiosk queue is the most
-     distinctive screen in the project — lead with it. This repo currently has no images at all,
-     and a reader who won't clone it has nothing to look at. -->
+## The four surfaces
+
+| | |
+|---|---|
+| ![Walk-in queue in the staff app](docs/screenshots/staff-queue.png) | ![Day calendar, one column per barber](docs/screenshots/staff-calendar.png) |
+| **Walk-in queue.** Every waiting client gets a projected seat time that respects the booked calendar, so a walk-in is never seated into an hour someone reserved online. Recomputed on every change and pushed to all four screens. | **The calendar.** One column per barber, built in house — per-resource day views are behind a paywall in every library worth using. Appointments in progress and projected walk-ins are drawn differently on purpose. |
+| ![Public booking, picking a time](docs/screenshots/booking-time.png) | ![The in-shop kiosk front door](docs/screenshots/kiosk-landing.png) |
+| **Public booking.** Slots come from the availability engine — the barber's schedule, minus exceptions, intersected with shop hours, minus existing appointments and time already promised to the queue. "Any barber" fans out and merges. | **The kiosk.** A walk-up front door on the shop tablet, showing the real current wait before anyone commits to it. Paired once to a device token that an admin can revoke; it can join the queue and read the board, and nothing else. |
 
 ## Packages
 
