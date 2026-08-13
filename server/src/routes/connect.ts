@@ -13,11 +13,18 @@ import type { ConnectStatusDto, OnboardingLinkDto } from '@francis/shared';
 import { Router, type Request } from 'express';
 
 import { env } from '../config/env.js';
+import { ValidationError } from '../lib/errors.js';
 import { pathParam } from '../lib/http.js';
 import { limiter } from '../lib/rate-limit.js';
 import { requireBarberSelfOrAdmin } from '../middleware/require-auth.js';
 import { auditContext, recordAudit } from '../services/audit.js';
-import { createOnboardingLink, getConnectStatus, refreshConnectStatus } from '../services/connect.js';
+import {
+  createOnboardingLink,
+  getConnectStatus,
+  refreshConnectStatus,
+  registerWalletDomain,
+  walletDomainName,
+} from '../services/connect.js';
 
 export const connectRouter: Router = Router();
 
@@ -119,5 +126,52 @@ connectRouter.post(
 
     const body: ConnectStatusDto = after;
     res.json(body);
+  },
+);
+
+/**
+ * (Re)registers the checkout domain for this chair's wallets.
+ *
+ * Registration happens automatically the moment Stripe clears a chair to take money, so
+ * this exists for the case that automation cannot cover: the **domain changing after
+ * that**. A shop that tests on a tunnel and then deploys to a real host has barbers whose
+ * charges-enabled transition is long past, and nothing else would ever ask Stripe again.
+ *
+ * Answers the wallet statuses rather than a bare 204, because "registered" and "Apple Pay
+ * is actually active" are different facts — a domain can register with a wallet still
+ * pending, and an admin who is told only that it worked has no way to see the difference.
+ */
+connectRouter.post(
+  '/barbers/:barberId/connect/wallet-domain',
+  stripeCallLimit,
+  requireBarberSelfOrAdmin(barberIdOf),
+  async (req, res) => {
+    const barberId = barberIdOf(req);
+    const status = await getConnectStatus(barberId);
+
+    if (status.stripeAccountId === null) {
+      throw new ValidationError('Set up payouts for this chair first.');
+    }
+
+    const domain = walletDomainName();
+    if (domain === null) {
+      // Not an error: local development has no registerable host, and saying so plainly
+      // beats a failure that reads like a Stripe problem.
+      res.json({ registered: false, reason: 'No public HTTPS domain is configured.' });
+      return;
+    }
+
+    const wallets = await registerWalletDomain(status.stripeAccountId);
+
+    if (wallets) {
+      await recordAudit(auditContext(req), {
+        action: 'connect.wallet_domain_registered',
+        entityType: 'Barber',
+        entityId: barberId,
+        after: wallets,
+      });
+    }
+
+    res.json({ registered: wallets !== null, domain, wallets });
   },
 );

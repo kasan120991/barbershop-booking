@@ -86,6 +86,13 @@ export type AuditAction =
   | 'connect.account_created'
   | 'connect.status_changed'
   /**
+   * The checkout domain registered on a chair's connected account, which is what makes
+   * Apple Pay and Google Pay appear. Money-adjacent config: it decides how a customer is
+   * able to pay, and it is per-account under direct charges, so "why can this chair take
+   * Apple Pay and that one cannot" has an answer.
+   */
+  | 'connect.wallet_domain_registered'
+  /**
    * Money changed hands. Cash especially: a card payment leaves a second copy of the
    * story on Stripe, and cash leaves none — this row is the only record that the drawer
    * and the day's total should agree, and who says so.

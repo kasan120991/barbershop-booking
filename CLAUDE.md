@@ -325,6 +325,21 @@ Settled while building it:
 - **Cash** is a first-class `Payment` row with `method: CASH` and no Stripe object.
 - **Instant payout** requires a **debit card** as external account, not just a bank. Always show
   the exact fee before confirming.
+- **Apple Pay and Google Pay need the checkout domain registered PER CONNECTED ACCOUNT.**
+  That is specific to direct charges — Stripe's words: "When using direct charges with
+  Stripe Connect, you must configure the domain for each connected account using the API."
+  `automatic_payment_methods` and a Payment Element mounted with `stripeAccount` are not
+  enough on their own; without the registration the wallet buttons simply never render and
+  nothing errors. `registerWalletDomain` in `services/connect.ts` does it, automatically on
+  the charges-enabled transition, with `POST /barbers/:id/connect/wallet-domain` for when
+  the domain itself changes later. No `.well-known` file is needed — Stripe handles Apple's
+  merchant validation behind the scenes, and a sandbox registration comes back
+  `apple_pay: active` immediately. The domain comes from `BOOKING_ORIGIN` and must be public
+  HTTPS, so local development skips it silently rather than registering a host Apple will
+  never validate.
+- **Webhooks:** one endpoint, signature-verified, **raw body**, idempotent by `event.id` persisted
+  in `WebhookEvent`. Connected-account events arrive with `event.account` — route by that.
+
 - **Webhooks:** one endpoint, signature-verified, **raw body**, idempotent by `event.id` persisted
   in `WebhookEvent`. Connected-account events arrive with `event.account` — route by that.
 

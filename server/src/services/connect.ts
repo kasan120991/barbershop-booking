@@ -18,6 +18,7 @@ import type Stripe from 'stripe';
 
 import { NotFoundError } from '../lib/errors.js';
 import { logger } from '../lib/logger.js';
+import { env } from '../config/env.js';
 import { prisma } from '../lib/prisma.js';
 import { stripe } from '../lib/stripe.js';
 
@@ -121,6 +122,134 @@ export function mirrorOf(account: Stripe.Account): CapabilityMirror {
     detailsSubmitted: account.details_submitted,
     instantPayoutEligible: hasDebitCardExternalAccount(account),
   };
+}
+
+/**
+ * The host wallets are registered against, or null when there is nothing registerable.
+ *
+ * Derived from `BOOKING_ORIGIN` — the origin customer-facing links are already built
+ * from, which is exactly where the checkout page is served — rather than a second setting
+ * that can disagree with it.
+ *
+ * Returns null for anything Apple and Google will not accept, which in practice means the
+ * whole of local development: they require a publicly reachable HTTPS host, so `http://`,
+ * `localhost` and a LAN address are all silently skipped. A tunnel (`https://….ngrok-free.dev`)
+ * IS public HTTPS and does register, which is what makes the wallets testable on a real
+ * phone before there is a production domain.
+ *
+ * The origin is a parameter defaulting to the environment, for the same reason `now` is
+ * threaded through the estimator: a rule this consequential should be exercisable against
+ * every shape of host without a test having to reach into `process.env`.
+ */
+export function walletDomainName(origin: string = env.BOOKING_ORIGIN): string | null {
+  let url: URL;
+  try {
+    url = new URL(origin);
+  } catch {
+    return null;
+  }
+
+  if (url.protocol !== 'https:') return null;
+
+  const host = url.hostname;
+  if (host === 'localhost' || host.endsWith('.local')) return null;
+  // Literal IPs are never registerable, and the private ranges are the ones that show up
+  // in this shop's own dev config.
+  if (/^\d{1,3}(\.\d{1,3}){3}$/.test(host)) return null;
+
+  return host;
+}
+
+export interface WalletDomainStatus {
+  domain: string;
+  applePay: string;
+  googlePay: string;
+  link: string;
+}
+
+/**
+ * Registers the checkout domain on ONE connected account.
+ *
+ * **Per account, not once for the platform** — that is the part specific to direct
+ * charges, and the reason wallets stayed hidden despite the Payment Element and
+ * `automatic_payment_methods` both being right from the start. Stripe's own words: "When
+ * using direct charges with Stripe Connect, you must configure the domain for each
+ * connected account using the API."
+ *
+ * Idempotent by re-reading rather than by an idempotency key: a domain already registered
+ * on this account makes `create` fail, and the useful recovery is to find the existing
+ * registration and re-validate it — which is also what activates a wallet whose
+ * requirements were unmet the first time.
+ *
+ * Never throws. This runs off the back of onboarding and off a webhook, and a barber must
+ * not be told their payout setup failed because a wallet could not be registered — cards
+ * work either way, and the manual retry is one button.
+ */
+export async function registerWalletDomain(
+  stripeAccountId: string,
+): Promise<WalletDomainStatus | null> {
+  const domain = walletDomainName();
+  if (domain === null) return null;
+
+  try {
+    const created = await stripe().paymentMethodDomains.create(
+      { domain_name: domain },
+      { stripeAccount: stripeAccountId },
+    );
+    return toWalletStatus(created);
+  } catch {
+    // Almost always "already registered". Find it and validate, which re-checks the
+    // wallets that were inactive before and leaves the active ones alone.
+    try {
+      const existing = await stripe().paymentMethodDomains.list(
+        { domain_name: domain, limit: 1 },
+        { stripeAccount: stripeAccountId },
+      );
+
+      const found = existing.data[0];
+      if (!found) return null;
+
+      const validated = await stripe().paymentMethodDomains.validate(found.id, undefined, {
+        stripeAccount: stripeAccountId,
+      });
+      return toWalletStatus(validated);
+    } catch (error) {
+      logger.warn({ err: error, stripeAccountId, domain }, 'Wallet domain registration failed');
+      return null;
+    }
+  }
+}
+
+function toWalletStatus(domain: Stripe.PaymentMethodDomain): WalletDomainStatus {
+  return {
+    domain: domain.domain_name,
+    applePay: domain.apple_pay.status,
+    googlePay: domain.google_pay.status,
+    link: domain.link.status,
+  };
+}
+
+/**
+ * Registers wallets the moment a chair becomes able to take money, and only then.
+ *
+ * On the TRANSITION rather than on every update: `account.updated` arrives repeatedly for
+ * an account Stripe is still working through, and re-registering on each one would be an
+ * API call per webhook for a domain that has not moved. When the domain itself changes —
+ * a tunnel, then a real host — the transition is long past, which is what the manual
+ * retry endpoint is for.
+ */
+async function registerWalletsOnEnable(
+  stripeAccountId: string | null,
+  before: ConnectStatus,
+  after: ConnectStatus,
+): Promise<void> {
+  if (stripeAccountId === null) return;
+  if (!after.chargesEnabled || before.chargesEnabled) return;
+
+  const status = await registerWalletDomain(stripeAccountId);
+  if (status) {
+    logger.info({ stripeAccountId, ...status }, 'Registered wallet domain for connected account');
+  }
 }
 
 /**
@@ -240,6 +369,8 @@ export async function refreshConnectStatus(barberId: string): Promise<{
   const updated = await prisma.barber.update({ where: { id: barberId }, data: mirror });
   const after = toStatus(updated);
 
+  await registerWalletsOnEnable(barber.stripeAccountId, before, after);
+
   return { before, after, changed: didChange(before, after) };
 }
 
@@ -278,6 +409,8 @@ export async function applyAccountUpdate(account: Stripe.Account): Promise<{
     data: mirrorOf(account),
   });
   const after = toStatus(updated);
+
+  await registerWalletsOnEnable(account.id, before, after);
 
   return { barberId: barber.id, before, after, changed: didChange(before, after) };
 }
