@@ -9,10 +9,12 @@
 
 import {
   createDeviceRequestSchema,
+  DEVICE_TYPE,
   pairDeviceRequestSchema,
   type DeviceDto,
   type PairDeviceResponse,
   type PairingCodeDto,
+  type VoiceCredentialDto,
   ROLE,
 } from '@francis/shared';
 import { Router } from 'express';
@@ -26,6 +28,7 @@ import { requireRole } from '../middleware/require-auth.js';
 import { auditContext, recordAudit } from '../services/audit.js';
 import {
   createPairingCode,
+  createVoiceCredential,
   deleteRevokedDevice,
   listDevices,
   redeemPairingCode,
@@ -41,10 +44,41 @@ const pairRateLimit = limiter({
   message: 'Too many pairing attempts. Wait a few minutes, then ask for a fresh code.',
 });
 
+/**
+ * Creating a screen hands back a pairing code; creating a voice line hands back the
+ * token itself.
+ *
+ * The branch is here rather than in two routes because it is one act — an admin issuing
+ * a credential to a machine — and the audit row, the role check and the "shown once"
+ * handling are identical. What differs is only which secret a device with no screen can
+ * be given, which `createVoiceCredential` explains.
+ */
 deviceRouter.post('/devices', requireRole(ROLE.ADMIN as Role), async (req, res) => {
   if (req.auth?.kind !== 'user') throw new UnauthenticatedError();
 
   const { label, type } = createDeviceRequestSchema.parse(req.body);
+
+  if (type === DEVICE_TYPE.VOICE) {
+    const voice = await createVoiceCredential({ label, createdByUserId: req.auth.userId });
+
+    // Picked fields, never `after: voice` — that object carries the live token.
+    await recordAudit(auditContext(req), {
+      action: 'device.created',
+      entityType: 'Device',
+      entityId: voice.deviceId,
+      after: { label: voice.label, type: voice.type },
+    });
+
+    const voiceBody: VoiceCredentialDto = {
+      deviceId: voice.deviceId,
+      label: voice.label,
+      type: DEVICE_TYPE.VOICE,
+      deviceToken: voice.deviceToken,
+    };
+
+    res.status(201).json(voiceBody);
+    return;
+  }
 
   const created = await createPairingCode({
     label,

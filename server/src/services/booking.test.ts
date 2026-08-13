@@ -12,6 +12,7 @@ import {
   cancelAppointment,
   cancelAppointmentByToken,
   createAppointment,
+  rescheduleAppointment,
   updateAppointmentStatus,
 } from './booking.js';
 import { getAvailability } from './availability.js';
@@ -19,6 +20,9 @@ import { hashPassword } from './passwords.js';
 
 const PREFIX = 'BOOKTEST ';
 const BARBER_EMAIL = 'barber@booking.test';
+/** A second chair, for the cross-barber reschedule cases. */
+const OTHER_BARBER_EMAIL = 'barber2@booking.test';
+const EMAILS = [BARBER_EMAIL, OTHER_BARBER_EMAIL];
 const CLIENT_PHONE = '+14155550301';
 /** Distinct numbers so the concurrency test races the booking lock, not a client upsert. */
 const RACER_ONE = '+14155550302';
@@ -30,18 +34,27 @@ const reachable = await prisma
   .catch(() => false);
 
 let barberId = '';
+let otherBarberId = '';
 let serviceId = '';
+/** Offered by the first barber only, so a move to the second must be refused. */
+let exclusiveServiceId = '';
 
 async function cleanup() {
   await prisma.appointmentService.deleteMany({
-    where: { appointment: { barber: { user: { email: BARBER_EMAIL } } } },
+    where: { appointment: { barber: { user: { email: { in: EMAILS } } } } },
   });
-  await prisma.appointment.deleteMany({ where: { barber: { user: { email: BARBER_EMAIL } } } });
-  await prisma.barberDayLock.deleteMany({ where: { barber: { user: { email: BARBER_EMAIL } } } });
-  await prisma.barberSchedule.deleteMany({ where: { barber: { user: { email: BARBER_EMAIL } } } });
+  await prisma.appointment.deleteMany({
+    where: { barber: { user: { email: { in: EMAILS } } } },
+  });
+  await prisma.barberDayLock.deleteMany({
+    where: { barber: { user: { email: { in: EMAILS } } } },
+  });
+  await prisma.barberSchedule.deleteMany({
+    where: { barber: { user: { email: { in: EMAILS } } } },
+  });
   await prisma.barberService.deleteMany({ where: { service: { name: { startsWith: PREFIX } } } });
-  await prisma.barber.deleteMany({ where: { user: { email: BARBER_EMAIL } } });
-  await prisma.user.deleteMany({ where: { email: BARBER_EMAIL } });
+  await prisma.barber.deleteMany({ where: { user: { email: { in: EMAILS } } } });
+  await prisma.user.deleteMany({ where: { email: { in: EMAILS } } });
   await prisma.service.deleteMany({ where: { name: { startsWith: PREFIX } } });
   await prisma.client.deleteMany({
     where: { phoneE164: { in: [CLIENT_PHONE, RACER_ONE, RACER_TWO] } },
@@ -88,11 +101,36 @@ async function reseed() {
     data: { barberId, dayOfWeek: 2, startMinute: 600, endMinute: 1080 },
   });
 
+  const otherUser = await prisma.user.create({
+    data: {
+      email: OTHER_BARBER_EMAIL,
+      passwordHash: await hashPassword('FrancisCutz!2026'),
+      firstName: 'Book',
+      lastName: 'Tester Two',
+      roles: { create: [{ role: 'BARBER' }] },
+    },
+  });
+
+  const otherBarber = await prisma.barber.create({
+    data: { userId: otherUser.id, displayName: 'Booktwo', slug: `booktwo-${otherUser.id}` },
+  });
+  otherBarberId = otherBarber.id;
+  await prisma.barberSchedule.create({
+    data: { barberId: otherBarberId, dayOfWeek: 2, startMinute: 600, endMinute: 1080 },
+  });
+
   const service = await prisma.service.create({
     data: { name: `${PREFIX}Haircut`, priceCents: 4500, durationMinutes: 45 },
   });
   serviceId = service.id;
   await prisma.barberService.create({ data: { barberId, serviceId } });
+  await prisma.barberService.create({ data: { barberId: otherBarberId, serviceId } });
+
+  const exclusive = await prisma.service.create({
+    data: { name: `${PREFIX}Colour`, priceCents: 12000, durationMinutes: 90 },
+  });
+  exclusiveServiceId = exclusive.id;
+  await prisma.barberService.create({ data: { barberId, serviceId: exclusiveServiceId } });
 }
 
 /** 2026-08-11 is a Tuesday; 10:00 local is 14:00Z in August. */
@@ -391,5 +429,326 @@ describe.skipIf(!reachable)('cancellation and status', () => {
     await expect(
       cancelAppointment(appointment.id, { enforceMinimumNotice: false, now: NOW }),
     ).rejects.toThrow(/already cancelled/i);
+  });
+});
+
+describe.skipIf(!reachable)('rescheduling an appointment', () => {
+  beforeEach(reseed);
+
+  /** 11:00 local on the same Tuesday, an hour after SLOT. */
+  const LATER = new Date('2026-08-11T15:00:00.000Z');
+
+  function rescheduleInput(appointmentId: string, overrides: Record<string, unknown> = {}) {
+    return {
+      appointmentId,
+      startAt: LATER,
+      enforceMinimumNotice: false,
+      enforceOnlineRules: false,
+      now: NOW,
+      ...overrides,
+    };
+  }
+
+  it('moves the time while keeping the id and the cancel token', async () => {
+    const booked = await createAppointment(bookingInput());
+
+    const moved = await rescheduleAppointment(rescheduleInput(booked.id));
+
+    expect(moved.id).toBe(booked.id);
+    // The link the client already holds has to keep working. Reissuing it is the whole
+    // reason this is an update rather than a cancel and a create.
+    expect(moved.cancelToken).toBe(booked.cancelToken);
+    expect(moved.startAt.toISOString()).toBe(LATER.toISOString());
+    expect(moved.endAt.toISOString()).toBe(new Date(LATER.getTime() + 45 * 60_000).toISOString());
+    expect(moved.status).toBe('BOOKED');
+  });
+
+  it('does not reprice a move when the menu has changed underneath it', async () => {
+    const booked = await createAppointment(bookingInput());
+    expect(booked.priceCentsTotal).toBe(4500);
+
+    // The shop puts its prices up between the booking and the phone call.
+    await prisma.service.update({
+      where: { id: serviceId },
+      data: { priceCents: 6000, durationMinutes: 60 },
+    });
+
+    const moved = await rescheduleAppointment(rescheduleInput(booked.id));
+
+    // Snapshots are what the client agreed to. A move is not a repricing.
+    expect(moved.priceCentsTotal).toBe(4500);
+    expect(moved.durationMinutes).toBe(45);
+    expect(moved.services[0]?.priceCents).toBe(4500);
+    expect(moved.endAt.toISOString()).toBe(new Date(LATER.getTime() + 45 * 60_000).toISOString());
+  });
+
+  it('re-snapshots when the basket genuinely changes', async () => {
+    const booked = await createAppointment(bookingInput());
+
+    const moved = await rescheduleAppointment(
+      rescheduleInput(booked.id, { serviceIds: [exclusiveServiceId] }),
+    );
+
+    expect(moved.priceCentsTotal).toBe(12000);
+    expect(moved.durationMinutes).toBe(90);
+    expect(moved.services).toHaveLength(1);
+    expect(moved.services[0]?.serviceId).toBe(exclusiveServiceId);
+  });
+
+  it('treats the same basket in a different order as no change at all', async () => {
+    const booked = await createAppointment(bookingInput());
+    await prisma.service.update({ where: { id: serviceId }, data: { priceCents: 9900 } });
+
+    // Re-sending what is already booked must not trigger a re-snapshot at the new price.
+    const moved = await rescheduleAppointment(
+      rescheduleInput(booked.id, { serviceIds: [serviceId] }),
+    );
+
+    expect(moved.priceCentsTotal).toBe(4500);
+  });
+
+  /**
+   * The highest-value case in this file.
+   *
+   * Nudging a 45-minute cut by fifteen minutes overlaps its own old footprint. Without
+   * `excludeAppointmentId` the appointment finds itself in the conflict query and the
+   * move is refused — a failure that reads exactly like somebody else taking the slot.
+   */
+  it('allows a move that overlaps only itself', async () => {
+    const booked = await createAppointment(bookingInput());
+    const nudged = new Date(SLOT.getTime() + 15 * 60_000);
+
+    const moved = await rescheduleAppointment(rescheduleInput(booked.id, { startAt: nudged }));
+
+    expect(moved.startAt.toISOString()).toBe(nudged.toISOString());
+  });
+
+  it('refuses a move onto somebody else in the same chair', async () => {
+    const first = await createAppointment(bookingInput());
+    await createAppointment(
+      bookingInput({ startAt: LATER, client: { phone: RACER_ONE, firstName: 'Other' } }),
+    );
+
+    await expect(rescheduleAppointment(rescheduleInput(first.id))).rejects.toThrow(
+      /just took that time/i,
+    );
+  });
+
+  it('honours the turnaround buffer on both sides of the new time', async () => {
+    await prisma.shopSettings.update({ where: { id: 1 }, data: { bufferMinutes: 15 } });
+
+    const first = await createAppointment(bookingInput());
+    // 12:00 local — an hour clear of the 10:00–10:45 booking above.
+    const noon = new Date('2026-08-11T16:00:00.000Z');
+    const second = await createAppointment(
+      bookingInput({ startAt: noon, client: { phone: RACER_ONE, firstName: 'Other' } }),
+    );
+
+    // Ends at 12:45; moving the first to start at 12:50 leaves only five minutes.
+    const tooClose = new Date(noon.getTime() + 50 * 60_000);
+    await expect(
+      rescheduleAppointment(rescheduleInput(first.id, { startAt: tooClose })),
+    ).rejects.toThrow(/just took that time/i);
+
+    expect(second.id).toBeTruthy();
+  });
+
+  it('frees the old chair and fills the new one when it moves across barbers', async () => {
+    const booked = await createAppointment(bookingInput());
+
+    const moved = await rescheduleAppointment(
+      rescheduleInput(booked.id, { barberId: otherBarberId, startAt: SLOT }),
+    );
+    expect(moved.barberId).toBe(otherBarberId);
+
+    const date = '2026-08-11';
+    const freed = await getAvailability({ barberId, date, serviceIds: [serviceId], now: NOW });
+    const taken = await getAvailability({
+      barberId: otherBarberId,
+      date,
+      serviceIds: [serviceId],
+      now: NOW,
+    });
+
+    const iso = SLOT.toISOString();
+    expect(freed.slots.map((slot) => slot.toISOString())).toContain(iso);
+    expect(taken.slots.map((slot) => slot.toISOString())).not.toContain(iso);
+  });
+
+  it('refuses a chair that does not do the booked service', async () => {
+    const booked = await createAppointment(
+      bookingInput({ serviceIds: [exclusiveServiceId], startAt: SLOT }),
+    );
+
+    // The second barber never had that service. The booking clients filter the roster
+    // before offering a chair; a voice caller has no such list in front of them.
+    await expect(
+      rescheduleAppointment(rescheduleInput(booked.id, { barberId: otherBarberId })),
+    ).rejects.toThrow(/does not do all of those services/i);
+  });
+
+  it('locks both days when it moves across barbers, and one when it does not', async () => {
+    const booked = await createAppointment(bookingInput());
+    await prisma.barberDayLock.deleteMany({
+      where: { barber: { user: { email: { in: EMAILS } } } },
+    });
+
+    await rescheduleAppointment(rescheduleInput(booked.id, { startAt: LATER }));
+    // Same barber, same local day — deduped to a single lock row.
+    expect(
+      await prisma.barberDayLock.count({
+        where: { barber: { user: { email: { in: EMAILS } } } },
+      }),
+    ).toBe(1);
+
+    await rescheduleAppointment(
+      rescheduleInput(booked.id, { barberId: otherBarberId, startAt: SLOT }),
+    );
+    expect(
+      await prisma.barberDayLock.count({
+        where: { barber: { user: { email: { in: EMAILS } } } },
+      }),
+    ).toBe(2);
+  });
+
+  it('lets exactly one of two concurrent moves into the same slot win', async () => {
+    const first = await createAppointment(bookingInput());
+    const second = await createAppointment(
+      bookingInput({
+        startAt: new Date('2026-08-11T16:00:00.000Z'),
+        client: { phone: RACER_ONE, firstName: 'Other' },
+      }),
+    );
+
+    const results = await Promise.allSettled([
+      rescheduleAppointment(rescheduleInput(first.id, { startAt: LATER })),
+      rescheduleAppointment(rescheduleInput(second.id, { startAt: LATER })),
+    ]);
+
+    expect(results.filter((result) => result.status === 'fulfilled')).toHaveLength(1);
+    expect(results.filter((result) => result.status === 'rejected')).toHaveLength(1);
+  });
+
+  it('races a create and a move through the same exclusion', async () => {
+    const existing = await createAppointment(bookingInput());
+
+    const results = await Promise.allSettled([
+      rescheduleAppointment(rescheduleInput(existing.id, { startAt: LATER })),
+      createAppointment(
+        bookingInput({ startAt: LATER, client: { phone: RACER_TWO, firstName: 'Walkup' } }),
+      ),
+    ]);
+
+    // One exclusion, two entry points. If reschedule had grown its own copy of the
+    // overlap check, both of these would succeed and one chair would hold two people.
+    expect(results.filter((result) => result.status === 'fulfilled')).toHaveLength(1);
+  });
+
+  it('does not deadlock when two moves cross in opposite directions', async () => {
+    const mine = await createAppointment(bookingInput());
+    const theirs = await createAppointment({
+      ...bookingInput({ client: { phone: RACER_ONE, firstName: 'Other' } }),
+      barberId: otherBarberId,
+      startAt: LATER,
+    });
+
+    // A -> B's day while B -> A's day. Unordered locking makes each hold what the other
+    // waits for, and InnoDB kills one with "write conflict or deadlock".
+    const results = await Promise.allSettled([
+      rescheduleAppointment(
+        rescheduleInput(mine.id, { barberId: otherBarberId, startAt: new Date('2026-08-11T17:00:00.000Z') }),
+      ),
+      rescheduleAppointment(
+        rescheduleInput(theirs.id, { barberId, startAt: new Date('2026-08-11T18:00:00.000Z') }),
+      ),
+    ]);
+
+    for (const result of results) {
+      if (result.status === 'rejected') {
+        expect(String(result.reason)).not.toMatch(/deadlock|write conflict/i);
+      }
+    }
+    expect(results.filter((result) => result.status === 'fulfilled')).toHaveLength(2);
+  });
+
+  it('refuses to move anything that is not still booked', async () => {
+    const started = await createAppointment(bookingInput());
+    await updateAppointmentStatus(started.id, 'IN_PROGRESS');
+    await expect(rescheduleAppointment(rescheduleInput(started.id))).rejects.toThrow(
+      /already started/i,
+    );
+
+    const done = await createAppointment(
+      bookingInput({
+        startAt: new Date('2026-08-11T16:00:00.000Z'),
+        client: { phone: RACER_ONE, firstName: 'Other' },
+      }),
+    );
+    await updateAppointmentStatus(done.id, 'COMPLETED');
+    await expect(rescheduleAppointment(rescheduleInput(done.id))).rejects.toThrow(
+      /already happened/i,
+    );
+
+    const gone = await createAppointment(
+      bookingInput({
+        startAt: new Date('2026-08-11T17:00:00.000Z'),
+        client: { phone: RACER_TWO, firstName: 'Third' },
+      }),
+    );
+    await cancelAppointment(gone.id, { enforceMinimumNotice: false, now: NOW });
+    await expect(rescheduleAppointment(rescheduleInput(gone.id))).rejects.toThrow(/was cancelled/i);
+  });
+
+  it('refuses a new time in the past', async () => {
+    const booked = await createAppointment(bookingInput());
+
+    await expect(
+      rescheduleAppointment(
+        rescheduleInput(booked.id, { startAt: new Date('2026-07-01T14:00:00.000Z') }),
+      ),
+    ).rejects.toThrow(/already passed/i);
+  });
+
+  /**
+   * Both halves, per the standing rule for these flags: the public is held to the notice
+   * window and staff are not. A test that asserted only one half would let the other
+   * silently invert.
+   */
+  it('holds the public to the notice window and lets staff move anything', async () => {
+    const booked = await createAppointment(bookingInput());
+
+    // Half an hour before a 10:00 booking, with the window at 60 minutes.
+    const justBefore = new Date('2026-08-11T13:30:00.000Z');
+
+    await expect(
+      rescheduleAppointment(
+        rescheduleInput(booked.id, {
+          startAt: LATER,
+          enforceMinimumNotice: true,
+          now: justBefore,
+        }),
+      ),
+    ).rejects.toThrow(/too close to your appointment/i);
+
+    const moved = await rescheduleAppointment(
+      rescheduleInput(booked.id, { startAt: LATER, enforceMinimumNotice: false, now: justBefore }),
+    );
+    expect(moved.startAt.toISOString()).toBe(LATER.toISOString());
+  });
+
+  it('refuses a new time inside the notice window for the public', async () => {
+    const booked = await createAppointment(bookingInput());
+
+    // The old start is comfortably clear; the NEW one is thirty minutes away.
+    const now = new Date('2026-08-11T13:00:00.000Z');
+    await expect(
+      rescheduleAppointment(
+        rescheduleInput(booked.id, {
+          startAt: new Date('2026-08-11T13:30:00.000Z'),
+          enforceMinimumNotice: true,
+          now,
+        }),
+      ),
+    ).rejects.toThrow(/of notice/i);
   });
 });

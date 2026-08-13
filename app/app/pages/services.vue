@@ -150,6 +150,7 @@ const shopForm = reactive({
   minimumNoticeMinutes: 60,
   walkInQueueEnabled: true,
   onlineBookingEnabled: true,
+  voiceBookingEnabled: true,
 });
 
 watchEffect(() => {
@@ -166,6 +167,7 @@ watchEffect(() => {
     minimumNoticeMinutes: settings.minimumNoticeMinutes,
     walkInQueueEnabled: settings.walkInQueueEnabled,
     onlineBookingEnabled: settings.onlineBookingEnabled,
+    voiceBookingEnabled: settings.voiceBookingEnabled,
   });
 });
 
@@ -443,6 +445,14 @@ async function onDeleteClosure(closureId: string) {
                 <ToggleSwitch v-model="shopForm.walkInQueueEnabled" input-id="shop-queue" />
                 <label for="shop-queue">Walk-in queue enabled</label>
               </div>
+              <div class="toggle">
+                <ToggleSwitch v-model="shopForm.voiceBookingEnabled" input-id="shop-voice" />
+                <label for="shop-voice">Phone bookings enabled</label>
+              </div>
+              <p class="hint">
+                Each switch governs one way in. Turning online booking off does not stop the
+                phone assistant, and turning the phone off does not close the website.
+              </p>
 
               <Button label="Save Settings" :loading="savingSettings" @click="onSaveSettings" />
             </section>

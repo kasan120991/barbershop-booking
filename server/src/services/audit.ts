@@ -44,6 +44,17 @@ export type AuditAction =
   | 'appointment.created'
   | 'appointment.cancelled'
   | 'appointment.status_changed'
+  /**
+   * An appointment moved — a new time, a new chair, or both.
+   *
+   * Not a status change, so it does not fit `appointment.status_changed`, and
+   * emphatically not a cancellation followed by a creation: the row keeps its id and its
+   * cancel token, so the trail has to be able to say "this became that" rather than
+   * leaving somebody to infer that two rows an hour apart were one haircut. `before` and
+   * `after` carry the barber and the start, which is what a "but I booked it for two
+   * o'clock" conversation actually needs.
+   */
+  | 'appointment.rescheduled'
   | 'queue.joined'
   | 'queue.called'
   | 'queue.status_changed'

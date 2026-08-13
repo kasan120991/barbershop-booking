@@ -29,6 +29,7 @@
 
 import EllipsisIcon from '@primeicons/vue/ellipsis-v';
 import {
+  appointmentChangeTouches,
   formatCents,
   formatDuration,
   type AppointmentDto,
@@ -71,13 +72,21 @@ const range = computed(() =>
     : shop.rangeOfDays(shop.weekStart(cursor.value), 7),
 );
 
-async function load(): Promise<void> {
+/**
+ * `quiet` for refetches nobody asked for — a socket signal or the poll.
+ *
+ * Without it a background refresh flips `loading` and blanks the agenda under whoever is
+ * reading it, and raises a toast about a fetch they never triggered. `loadRange` already
+ * swallows its own error when quiet, so the catch below only ever fires for a load the
+ * page asked for on purpose.
+ */
+async function load(quiet = false): Promise<void> {
   if (barberId.value === null) return;
   try {
     // Always named, never left to the server. A BARBER would be scoped to themselves
     // anyway, but the owner holds ADMIN too — and an admin who does not ask for a barber
     // is given all of them, which on this page is every other chair's work.
-    await book.loadRange(range.value.from, range.value.to, { barberId: barberId.value });
+    await book.loadRange(range.value.from, range.value.to, { barberId: barberId.value, quiet });
   } catch (error) {
     notifyApiFailure(error, 'Could not load your book.');
   }
@@ -85,6 +94,23 @@ async function load(): Promise<void> {
 
 await load();
 watch(range, () => void load());
+
+/**
+ * Somebody else moved something on this chair.
+ *
+ * The `shop` room carries every chair's changes and this page is one chair, so the filter
+ * is what keeps it from refetching for work that is not theirs. `barberIds` names BOTH
+ * chairs of a cross-barber move, which is what lets the chair that *lost* a booking hear
+ * about it and drop the row. Works unchanged in week view — `range` is already the window.
+ */
+watch(book.lastChange, (change) => {
+  if (change === null || barberId.value === null) return;
+  if (!appointmentChangeTouches(change, { ...range.value, barberId: barberId.value })) return;
+  void load(true);
+});
+
+// The backstop under the socket — see `useVisiblePoll`. This page has never had one.
+useVisiblePoll(60_000, () => void load(true));
 
 // The queue board is already live in shared state and polled by the shell, so today's
 // walk-ins cost nothing beyond this one call.

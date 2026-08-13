@@ -19,9 +19,12 @@ import { io as connect, type Socket } from 'socket.io-client';
 import request from 'supertest';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
+import type { AppointmentChanged } from '@francis/shared';
+
 import { createApp } from '../app.js';
 import { CSRF_HEADER } from '../config/constants.js';
 import { prisma } from '../lib/prisma.js';
+import { createAppointment } from '../services/booking.js';
 import { hashPassword } from '../services/passwords.js';
 import { closeRealtime, createRealtime } from './index.js';
 
@@ -31,7 +34,9 @@ const PREFIX = 'RTTEST ';
 const PASSWORD = 'FrancisCutz!2026';
 const ADMIN_EMAIL = 'admin@realtime.test';
 const BARBER_EMAIL = 'barber@realtime.test';
-const EMAILS = [ADMIN_EMAIL, BARBER_EMAIL];
+/** A second chair, so a reschedule can cross one. */
+const BARBER2_EMAIL = 'barber2@realtime.test';
+const EMAILS = [ADMIN_EMAIL, BARBER_EMAIL, BARBER2_EMAIL];
 
 const ALICE = '+14155550601';
 const BOB = '+14155550602';
@@ -50,12 +55,16 @@ const todayWeekday = DateTime.now().setZone(TIMEZONE).weekday % 7;
 let httpServer: HttpServer;
 let port = 0;
 let barberId = '';
+let barberId2 = '';
 let cutId = '';
 
 /** Every socket opened by a test, closed in `afterEach` so none outlive their case. */
 const open: Socket[] = [];
 
 async function cleanup() {
+  // Appointments hold FKs to both `client` and `barber`, so they go before either.
+  // `AppointmentService` cascades from the appointment; `BarberDayLock` from the barber.
+  await prisma.appointment.deleteMany({ where: { client: { phoneE164: { in: PHONES } } } });
   await prisma.queueEntryService.deleteMany({
     where: { queueEntry: { client: { phoneE164: { in: PHONES } } } },
   });
@@ -118,11 +127,46 @@ async function reseed() {
     data: { barberId, dayOfWeek: todayWeekday, startMinute: 0, endMinute: 1440 },
   });
 
+  const barber2User = await prisma.user.create({
+    data: {
+      email: BARBER2_EMAIL,
+      passwordHash: PASSWORD_HASH,
+      firstName: 'Rtest',
+      lastName: 'Second',
+      roles: { create: [{ role: 'BARBER' }] },
+    },
+  });
+  const barber2 = await prisma.barber.create({
+    data: { userId: barber2User.id, displayName: 'Rtest Dre', slug: `rtest2-${barber2User.id}` },
+  });
+  barberId2 = barber2.id;
+  await prisma.barberSchedule.create({
+    data: { barberId: barberId2, dayOfWeek: todayWeekday, startMinute: 0, endMinute: 1440 },
+  });
+
   const cut = await prisma.service.create({
     data: { name: `${PREFIX}Haircut`, priceCents: 4500, durationMinutes: 30 },
   });
   cutId = cut.id;
   await prisma.barberService.create({ data: { barberId, serviceId: cutId } });
+  // Load-bearing: `rescheduleAppointment` checks capability on a cross-barber move and
+  // would otherwise refuse with "does not do all of those services".
+  await prisma.barberService.create({ data: { barberId: barberId2, serviceId: cutId } });
+}
+
+/** Books straight through the service, so arranging a test is not itself under test. */
+async function bookAt(minutesFromNow: number, chair = barberId) {
+  return createAppointment({
+    barberId: chair,
+    serviceIds: [cutId],
+    // Whole minutes: the payload carries `.toISOString()` and `@db.DateTime(3)` keeps
+    // milliseconds, so a rounded instant keeps the assertions readable.
+    startAt: DateTime.now().plus({ minutes: minutesFromNow }).startOf('minute').toJSDate(),
+    client: { phone: ALICE, firstName: 'Alice', lastName: 'Anderson' },
+    source: 'STAFF',
+    enforceMinimumNotice: false,
+    enforceOnlineRules: false,
+  });
 }
 
 async function session(email: string) {
@@ -140,13 +184,13 @@ async function session(email: string) {
   };
 }
 
-async function kioskToken(): Promise<string> {
+async function deviceToken(type: 'KIOSK' | 'DISPLAY' = 'KIOSK'): Promise<string> {
   const admin = await session(ADMIN_EMAIL);
   const created = await request(app)
     .post('/api/devices')
     .set('Cookie', admin.cookies)
     .set(CSRF_HEADER, admin.csrfToken)
-    .send({ label: `${PREFIX}Kiosk`, type: 'KIOSK' })
+    .send({ label: `${PREFIX}${type}`, type })
     .expect(201);
 
   const paired = await request(app)
@@ -237,7 +281,7 @@ describe.skipIf(!reachable)('the handshake', () => {
   });
 
   it('puts a paired kiosk in the kiosk room and nowhere else', async () => {
-    const token = await kioskToken();
+    const token = await deviceToken();
     const socket = track(
       connect(url(), { reconnection: false, auth: { deviceToken: token } }),
     );
@@ -265,7 +309,7 @@ describe.skipIf(!reachable)('the handshake', () => {
    */
   it('puts a socket carrying BOTH a session cookie and a device token in shop', async () => {
     const staff = await session(BARBER_EMAIL);
-    const token = await kioskToken();
+    const token = await deviceToken();
 
     const socket = track(
       connect(url(), {
@@ -282,7 +326,7 @@ describe.skipIf(!reachable)('the handshake', () => {
   });
 
   it('puts the same device in kiosk once the cookie is not sent', async () => {
-    const token = await kioskToken();
+    const token = await deviceToken();
     const socket = track(connect(url(), { reconnection: false, auth: { deviceToken: token } }));
 
     const ready = await once<{ rooms: string[] }>(socket, 'connection:ready');
@@ -290,7 +334,7 @@ describe.skipIf(!reachable)('the handshake', () => {
   });
 
   it('refuses a device token that has been revoked', async () => {
-    const token = await kioskToken();
+    const token = await deviceToken();
     await prisma.device.updateMany({
       where: { label: { startsWith: PREFIX } },
       data: { revokedAt: new Date(), tokenHash: null },
@@ -358,7 +402,7 @@ describe.skipIf(!reachable)('broadcasting', () => {
    */
   it('never puts a phone number or a surname on the wire to a kiosk', async () => {
     const staff = await session(BARBER_EMAIL);
-    const token = await kioskToken();
+    const token = await deviceToken();
     const socket = track(connect(url(), { reconnection: false, auth: { deviceToken: token } }));
 
     await once(socket, 'queue:public');
@@ -380,7 +424,7 @@ describe.skipIf(!reachable)('broadcasting', () => {
 
   it('never sends the staff board to a kiosk at all', async () => {
     const staff = await session(BARBER_EMAIL);
-    const token = await kioskToken();
+    const token = await deviceToken();
     const socket = track(connect(url(), { reconnection: false, auth: { deviceToken: token } }));
 
     const leaked: unknown[] = [];
@@ -400,5 +444,227 @@ describe.skipIf(!reachable)('broadcasting', () => {
     // The room is the boundary, so the full-board event must not arrive at all —
     // not merely arrive with less in it.
     expect(leaked).toEqual([]);
+  });
+});
+
+describe.skipIf(!reachable)('announcing appointment changes', () => {
+  beforeEach(reseed);
+
+  /** Two hours out, whole minutes — clear of anything else these tests book. */
+  function soon(minutes = 120) {
+    return DateTime.now().plus({ minutes }).startOf('minute');
+  }
+
+  it('announces a creation to the shop, naming the chair and the time', async () => {
+    const staff = await session(ADMIN_EMAIL);
+    const socket = track(connect(url(), { reconnection: false, extraHeaders: { Cookie: staff.header } }));
+
+    await once(socket, 'queue:updated'); // the connect-time board
+    // Armed BEFORE the mutation: the emit is synchronous with the request handler.
+    const broadcast = once<AppointmentChanged>(socket, 'appointment:changed');
+
+    const startAt = soon();
+    await request(app)
+      .post('/api/appointments')
+      .set('Cookie', staff.cookies)
+      .set(CSRF_HEADER, staff.csrfToken)
+      .send({
+        barberId,
+        serviceIds: [cutId],
+        startAt: startAt.toUTC().toISO(),
+        phone: ALICE,
+        firstName: 'Alice',
+      })
+      .expect(201);
+
+    const payload = await broadcast;
+    expect(payload.action).toBe('created');
+    expect(payload.barberIds).toEqual([barberId]);
+    expect(payload.startAts).toEqual([startAt.toJSDate().toISOString()]);
+    expect(payload.appointmentId).toBeTruthy();
+  });
+
+  it('announces a cancellation with the chair it freed', async () => {
+    const appointment = await bookAt(120);
+    const staff = await session(ADMIN_EMAIL);
+    const socket = track(connect(url(), { reconnection: false, extraHeaders: { Cookie: staff.header } }));
+
+    await once(socket, 'queue:updated');
+    const broadcast = once<AppointmentChanged>(socket, 'appointment:changed');
+
+    await request(app)
+      .post(`/api/appointments/${appointment.id}/cancel`)
+      .set('Cookie', staff.cookies)
+      .set(CSRF_HEADER, staff.csrfToken)
+      .send({})
+      .expect(200);
+
+    const payload = await broadcast;
+    expect(payload.action).toBe('cancelled');
+    expect(payload.appointmentId).toBe(appointment.id);
+    // The bare row carried the chair all along — this is why `cancel` needed no widening.
+    expect(payload.barberIds).toEqual([barberId]);
+    expect(payload.startAts).toEqual([appointment.startAt.toISOString()]);
+  });
+
+  it('announces a status change, still naming the chair and the time', async () => {
+    const appointment = await bookAt(120);
+    const staff = await session(ADMIN_EMAIL);
+    const socket = track(connect(url(), { reconnection: false, extraHeaders: { Cookie: staff.header } }));
+
+    await once(socket, 'queue:updated');
+    const broadcast = once<AppointmentChanged>(socket, 'appointment:changed');
+
+    await request(app)
+      .patch(`/api/appointments/${appointment.id}/status`)
+      .set('Cookie', staff.cookies)
+      .set(CSRF_HEADER, staff.csrfToken)
+      .send({ status: 'IN_PROGRESS' })
+      .expect(200);
+
+    const payload = await broadcast;
+    expect(payload.action).toBe('status_changed');
+    // Neither moved, but a page filtering on `barberIds` still has to hear about it.
+    expect(payload.barberIds).toEqual([barberId]);
+    expect(payload.startAts).toEqual([appointment.startAt.toISOString()]);
+  });
+
+  /** The case the arrays exist for. */
+  it('names both chairs and both times when a booking moves across them', async () => {
+    const appointment = await bookAt(120);
+    const moved = DateTime.now().plus({ days: 1, hours: 2 }).startOf('minute');
+
+    const staff = await session(ADMIN_EMAIL);
+    const socket = track(connect(url(), { reconnection: false, extraHeaders: { Cookie: staff.header } }));
+
+    await once(socket, 'queue:updated');
+    const broadcast = once<AppointmentChanged>(socket, 'appointment:changed');
+
+    await request(app)
+      .post(`/api/appointments/${appointment.id}/reschedule`)
+      .set('Cookie', staff.cookies)
+      .set(CSRF_HEADER, staff.csrfToken)
+      .send({ startAt: moved.toUTC().toISO(), barberId: barberId2 })
+      .expect(200);
+
+    const payload = await broadcast;
+    expect(payload.action).toBe('rescheduled');
+    // The chair it left has to hear about it too, or it goes on rendering a booking
+    // that is now somebody else's.
+    expect(payload.barberIds).toContain(barberId);
+    expect(payload.barberIds).toContain(barberId2);
+    expect(payload.startAts).toContain(appointment.startAt.toISOString());
+    expect(payload.startAts).toContain(moved.toJSDate().toISOString());
+  });
+
+  it('collapses a same-chair nudge to one of each', async () => {
+    const appointment = await bookAt(120);
+    const moved = DateTime.now().plus({ minutes: 135 }).startOf('minute');
+
+    const staff = await session(ADMIN_EMAIL);
+    const socket = track(connect(url(), { reconnection: false, extraHeaders: { Cookie: staff.header } }));
+
+    await once(socket, 'queue:updated');
+    const broadcast = once<AppointmentChanged>(socket, 'appointment:changed');
+
+    await request(app)
+      .post(`/api/appointments/${appointment.id}/reschedule`)
+      .set('Cookie', staff.cookies)
+      .set(CSRF_HEADER, staff.csrfToken)
+      .send({ startAt: moved.toUTC().toISO() })
+      .expect(200);
+
+    const payload = await broadcast;
+    expect(payload.barberIds).toEqual([barberId]);
+    expect(payload.startAts).toHaveLength(2);
+  });
+
+  for (const type of ['KIOSK', 'DISPLAY'] as const) {
+    it(`never sends an appointment change to a ${type.toLowerCase()}`, async () => {
+      const token = await deviceToken(type);
+      const socket = track(connect(url(), { reconnection: false, auth: { deviceToken: token } }));
+
+      const leaked: unknown[] = [];
+      socket.on('appointment:changed', (payload: unknown) => leaked.push(payload));
+
+      await once(socket, 'queue:public'); // the connect-time board
+      const redacted = once(socket, 'queue:public'); // armed before the mutation
+
+      const staff = await session(ADMIN_EMAIL);
+      await request(app)
+        .post('/api/appointments')
+        .set('Cookie', staff.cookies)
+        .set(CSRF_HEADER, staff.csrfToken)
+        .send({
+          barberId,
+          serviceIds: [cutId],
+          startAt: soon().toUTC().toISO(),
+          phone: ALICE,
+          firstName: 'Alice',
+        })
+        .expect(201);
+
+      /**
+       * The barrier is what makes this an assertion rather than a race.
+       *
+       * An appointment mutation ALSO recomputes and broadcasts the queue, from the same
+       * handler — so once `queue:public` has landed on this socket, anything that
+       * mutation was ever going to send it has landed. Without waiting for that, the
+       * test would assert an absence with no proof the emit had a chance to arrive, and
+       * would pass just as happily against a broken room guard.
+       */
+      await redacted;
+      expect(leaked).toEqual([]);
+    });
+  }
+
+  it('delivers one copy to a barber, who is in both shop and their own room', async () => {
+    const staff = await session(BARBER_EMAIL);
+    const socket = track(connect(url(), { reconnection: false, extraHeaders: { Cookie: staff.header } }));
+
+    const changes: unknown[] = [];
+    socket.on('appointment:changed', (payload: unknown) => changes.push(payload));
+
+    await once(socket, 'queue:updated');
+    const first = once(socket, 'appointment:changed');
+    await bookAt(120);
+    await first;
+
+    /**
+     * A later broadcast on the SAME connection, as the barrier.
+     *
+     * Socket.IO preserves order per connection, and the booking's own board was emitted
+     * before its change — which has already arrived — so this can only resolve on the
+     * walk-in join's board, and a duplicate would have been delivered in between.
+     *
+     * The regression this pins: `broadcastAppointmentChanged` emitting to
+     * `barberRoom(id)` as well as `shop`, which reads like an improvement and silently
+     * doubles every change for exactly the people who cut the hair.
+     */
+    const board = once(socket, 'queue:updated');
+    await request(app)
+      .post('/api/queue')
+      .set('Cookie', staff.cookies)
+      .set(CSRF_HEADER, staff.csrfToken)
+      .send({ phone: BOB, firstName: 'Bob', serviceIds: [cutId] })
+      .expect(201);
+    await board;
+
+    expect(changes).toHaveLength(1);
+  });
+
+  it('still broadcasts the queue alongside it', async () => {
+    const staff = await session(ADMIN_EMAIL);
+    const socket = track(connect(url(), { reconnection: false, extraHeaders: { Cookie: staff.header } }));
+
+    await once(socket, 'queue:updated');
+    const board = once(socket, 'queue:updated');
+    const change = once(socket, 'appointment:changed');
+
+    await bookAt(120);
+
+    // The new event must not have displaced the existing one — booking a cut still takes
+    // time the estimator had promised somebody standing in the shop.
+    await Promise.all([board, change]);
   });
 });

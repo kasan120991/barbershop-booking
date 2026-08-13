@@ -17,6 +17,7 @@
 
 import { io, type Socket } from 'socket.io-client';
 import type {
+  AppointmentChanged,
   ClientToServerEvents,
   ConnectionReady,
   QueueBoardDto,
@@ -41,6 +42,7 @@ function socketOrigin(apiBase: string): string {
 export function useRealtime() {
   const config = useRuntimeConfig();
   const queue = useQueue();
+  const book = useAppointments();
 
   const connected = useState<boolean>('realtime:connected', () => false);
   const rooms = useState<string[]>('realtime:rooms', () => []);
@@ -79,10 +81,23 @@ export function useRealtime() {
         rooms.value = payload.rooms;
       });
 
-      // The one event this app acts on. The server sends it on connect as well as
-      // after every mutation, so a reconnect catches up without a reload.
+      // The server sends it on connect as well as after every mutation, so a reconnect
+      // catches up without a reload.
       socket.on('queue:updated', (board: QueueBoardDto) => {
         queue.board.value = board;
+      });
+
+      /**
+       * Somebody else moved an appointment — another admin at the desk, a client online,
+       * or the phone.
+       *
+       * A signal rather than a board, and the difference is the point: the queue is one
+       * thing every staff screen shows identically, while three pages read appointments
+       * over three different days. So this only records what changed, and the pages decide
+       * whether it is theirs. The shell must not know what a calendar is.
+       */
+      socket.on('appointment:changed', (change: AppointmentChanged) => {
+        book.lastChange.value = change;
       });
     });
 
@@ -91,6 +106,9 @@ export function useRealtime() {
       socket = null;
       connected.value = false;
       rooms.value = [];
+      // Cleared so a remount cannot re-fire a page's watcher on a change from the last
+      // session, refetching a range for something that happened before the reload.
+      book.lastChange.value = null;
     });
   }
 

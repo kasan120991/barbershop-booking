@@ -16,6 +16,7 @@
  * move — the same vocabulary as `/my-day`, from the same components.
  */
 
+import { appointmentChangeTouches } from '@francis/shared';
 import type { QueueEntryDto, WorkingHoursResponse } from '@francis/shared';
 
 useHead({ title: 'Calendar — Francis Cutz' });
@@ -67,24 +68,33 @@ watch(cursor, () => {
 onMounted(() => void queue.refresh({ quiet: true }));
 
 /**
- * A quiet minute poll underneath, gated like `useQueue.poll`: appointments have
- * no socket events yet, and another admin's booking must not need a reload to
- * appear on the board.
+ * Somebody else's booking, arriving live.
+ *
+ * Quiet, with the same rules as everything else here: it must not blank a board an admin
+ * is reading, and it must not raise a toast about a fetch nobody asked for. No `barberId`
+ * in the view — this board is every chair, so any chair's change is this board's change.
  */
-let timer: ReturnType<typeof setInterval> | undefined;
-const tick = () => {
-  if (document.visibilityState === 'visible') {
-    void load(true);
-    void loadWorkingDay();
-  }
-};
-onMounted(() => {
-  timer = setInterval(tick, 60_000);
-  document.addEventListener('visibilitychange', tick);
+watch(book.lastChange, (change) => {
+  if (change === null) return;
+  if (!appointmentChangeTouches(change, range.value)) return;
+  void load(true);
 });
-onUnmounted(() => {
-  if (timer !== undefined) clearInterval(timer);
-  document.removeEventListener('visibilitychange', tick);
+
+/**
+ * A quiet minute poll underneath the socket, gated to the visible tab.
+ *
+ * Not for a link that drops loudly — Socket.IO reconnects by itself and
+ * `appointment:changed` resumes. It is for the one that dies quietly while reporting
+ * itself healthy, and for the gap during a reconnect: unlike the queue board there is no
+ * connect-time backfill for appointments, because three pages read three different ranges
+ * and there is no one payload to send them.
+ *
+ * It also carries `/working-hours`, which has no socket event of its own — an admin
+ * changing somebody's schedule is not an appointment change.
+ */
+useVisiblePoll(60_000, () => {
+  void load(true);
+  void loadWorkingDay();
 });
 
 const isToday = computed(() => cursor.value === shop.today());

@@ -15,9 +15,16 @@ export function roomsFor(principal: AuthPrincipal): string[] {
     return [
       SOCKET_ROOM.shop,
       /**
-       * Joined now although nothing is emitted to it this phase. A barber-specific
-       * event later — their own client arriving, their own payment clearing — then
-       * costs an emit rather than a reconnect on every open tab in the shop.
+       * Joined, and still nothing is emitted to it.
+       *
+       * `appointment:changed` was the obvious first user and deliberately declined it: a
+       * barber is in `shop` too, so emitting to both delivers one change twice, and a
+       * cross-chair reschedule would be two emits for one fact. It carries every affected
+       * chair in its payload and the barber-scoped pages filter on that instead —
+       * `realtime.test.ts` pins the single delivery so nobody "improves" it back.
+       *
+       * The room still earns its place for something only one barber may see, where the
+       * payload itself would be wrong to put in front of the shop.
        */
       ...(principal.barberId === null ? [] : [barberRoom(principal.barberId)]),
     ];

@@ -53,6 +53,22 @@ export function formatCents(cents: Cents, currency: string = USD, locale = 'en-U
   }).format(cents / 100);
 }
 
+/**
+ * Cents -> a price meant to be **spoken aloud**, e.g. 4500 -> "$45", 4550 -> "$45.50".
+ *
+ * `formatCents` always prints the cents, which is right on a screen and wrong in a
+ * sentence: a text-to-speech engine reads "$45.00" as "forty-five dollars and zero
+ * cents". Dropping a trailing ".00" is the difference between a price and a recitation.
+ *
+ * Anything with real cents falls straight through to `formatCents`, so there is still
+ * exactly one currency formatter and this is a presentation choice layered on it rather
+ * than a second implementation.
+ */
+export function formatCentsSpoken(cents: Cents, currency: string = USD, locale = 'en-US'): string {
+  const formatted = formatCents(cents, currency, locale);
+  return cents % 100 === 0 ? formatted.replace(/\.00\b/, '') : formatted;
+}
+
 /** Cents -> a bare amount with no currency symbol, e.g. 4500 -> "45.00". For inputs and CSV. */
 export function formatCentsPlain(cents: Cents): string {
   assertCents(cents);

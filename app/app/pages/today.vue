@@ -23,7 +23,13 @@
  * sign-in — so it loads after mount, and says nothing at all if it cannot be had.
  */
 
-import { formatCents, formatDuration, type AppointmentDto, type QueueEntryDto } from '@francis/shared';
+import {
+  appointmentChangeTouches,
+  formatCents,
+  formatDuration,
+  type AppointmentDto,
+  type QueueEntryDto,
+} from '@francis/shared';
 
 useHead({ title: 'Today — Francis Cutz' });
 
@@ -46,17 +52,42 @@ await shop.ensureLoaded();
 
 const today = computed(() => shop.today());
 
-async function load(): Promise<void> {
+/**
+ * Lifted out of `load` so the socket watcher below can read it.
+ *
+ * It was computed inside the function when this page fetched exactly once and never
+ * again; now that a change can arrive at any moment, the range has to be something the
+ * page can compare against.
+ */
+const range = computed(() => shop.dayRange(today.value));
+
+/** `quiet` for the refetches nobody asked for — see the note on `/my-day`. */
+async function load(quiet = false): Promise<void> {
   if (barberId.value === null) return;
-  const range = shop.dayRange(today.value);
   try {
-    await book.loadRange(range.from, range.to, { barberId: barberId.value });
+    await book.loadRange(range.value.from, range.value.to, { barberId: barberId.value, quiet });
   } catch (error) {
     notifyApiFailure(error, 'Could not load your day.');
   }
 }
 
 await load();
+
+/**
+ * The page that gains the most from this.
+ *
+ * It fetched once on mount and never again, so a booking taken at the desk — or by the
+ * phone — for this barber's next slot was invisible until they navigated away and back.
+ * A barber standing at their chair believing they were free is the failure this closes.
+ */
+watch(book.lastChange, (change) => {
+  if (change === null || barberId.value === null) return;
+  if (!appointmentChangeTouches(change, { ...range.value, barberId: barberId.value })) return;
+  void load(true);
+});
+
+// The backstop under the socket — see `useVisiblePoll`.
+useVisiblePoll(60_000, () => void load(true));
 
 /** Takings are a database read; the balance is not, and is not asked for until mounted. */
 if (barberId.value !== null) {

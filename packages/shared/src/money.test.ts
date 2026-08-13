@@ -5,6 +5,7 @@ import {
   centsToDollars,
   formatCents,
   formatCentsPlain,
+  formatCentsSpoken,
   isCents,
   parseDollarsToCents,
   percentOfCents,
@@ -117,5 +118,30 @@ describe('percentOfCents', () => {
   it('rounds half away from zero, symmetrically for refunds', () => {
     expect(percentOfCents(1005, 50)).toBe(503);
     expect(percentOfCents(-1005, 50)).toBe(-503);
+  });
+});
+
+describe('formatCentsSpoken', () => {
+  it('drops a trailing .00, which text-to-speech reads as "and zero cents"', () => {
+    expect(formatCentsSpoken(4500)).toBe('$45');
+    expect(formatCentsSpoken(0)).toBe('$0');
+    expect(formatCentsSpoken(123400)).toBe('$1,234');
+  });
+
+  it('keeps real cents, because a price with them is not a round number', () => {
+    expect(formatCentsSpoken(4550)).toBe('$45.50');
+    expect(formatCentsSpoken(123456)).toBe('$1,234.56');
+  });
+
+  it('only strips the cents, never digits inside the amount', () => {
+    // The regression this guards: a bare `.replace('.00', '')` on "$1,200.00" is fine,
+    // but a looser pattern could eat part of the number itself.
+    expect(formatCentsSpoken(120000)).toBe('$1,200');
+    expect(formatCentsSpoken(-250)).toBe('-$2.50');
+    expect(formatCentsSpoken(-20000)).toBe('-$200');
+  });
+
+  it('inherits the float guard, so this cannot become a cents-leak escape hatch', () => {
+    expect(() => formatCentsSpoken(45.5)).toThrow(TypeError);
   });
 });

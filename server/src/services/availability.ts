@@ -21,6 +21,7 @@ import { DateTime } from 'luxon';
 import type { ScheduleExceptionType } from '../generated/prisma/enums.js';
 import { NotFoundError, ValidationError } from '../lib/errors.js';
 import { prisma } from '../lib/prisma.js';
+import { listBarbers } from './catalog.js';
 import {
   intersectIntervals,
   mergeIntervals,
@@ -436,6 +437,238 @@ export interface AvailabilityQuery {
   date: string;
   serviceIds: string[];
   now?: Date;
+}
+
+// --- Finding the next opening ------------------------------------------------
+
+export interface NextAvailableQuery {
+  serviceIds: string[];
+  /** Restrict to one chair; omitted fans out across every eligible barber. */
+  barberId?: string;
+  /** Local shop date to start scanning from. Defaults to today. */
+  fromDate?: string;
+  /** Only offer starts at or after this instant — "later today", "after four". */
+  after?: Date;
+  /** Most offers to return. Three is what somebody on the phone can hold in their head. */
+  limit?: number;
+  /** Hard cap on local days scanned, before the booking horizon is applied. */
+  maxDays?: number;
+  /** Whether `acceptsOnline` and `bookableOnline` narrow the set. */
+  enforceOnlineRules: boolean;
+  now?: Date;
+}
+
+export interface NextAvailableOffer {
+  barberId: string;
+  barberName: string;
+  /** A concrete UTC instant in a named barber's book. Never an unassigned slot. */
+  startAt: Date;
+}
+
+export interface NextAvailableResult {
+  offers: NextAvailableOffer[];
+  durationMinutes: number;
+  /** Populated only when `offers` is empty, so a caller can say why rather than "none". */
+  reason: string | null;
+}
+
+const DEFAULT_MAX_DAYS = 14;
+const DEFAULT_LIMIT = 3;
+
+/**
+ * "When is the next opening?" — across every barber who can do the job.
+ *
+ * The booking site answers this in the client: it asks each eligible barber for a day and
+ * merges the results. A phone caller cannot fan out, so the server has to. This is
+ * server-side *resolution*, not an unassigned appointment — every offer names a barber,
+ * because picking a time picks a person and the confirmation has to say who.
+ *
+ * Built on `loadDaySnapshots`, which is already plural and answers in five queries for
+ * any number of barbers. Looping `getAvailability` instead would be five queries per
+ * barber per day, which for a four-chair shop scanning a fortnight is 280.
+ *
+ * **It stops at the first day with anything on it**, so the usual call costs one day's
+ * queries, and every offer it returns is on the same date — which is also what makes the
+ * answer speakable. "I've got three times on Thursday" is a sentence; one on Thursday and
+ * one a fortnight later is a list.
+ */
+export async function findNextAvailable(query: NextAvailableQuery): Promise<NextAvailableResult> {
+  const now = query.now ?? new Date();
+  const limit = query.limit ?? DEFAULT_LIMIT;
+
+  const [settings, services] = await Promise.all([
+    prisma.shopSettings.findUnique({ where: { id: 1 } }),
+    prisma.service.findMany({ where: { id: { in: query.serviceIds } } }),
+  ]);
+
+  if (!settings) throw new NotFoundError('Shop settings have not been set up.');
+  if (services.length !== new Set(query.serviceIds).size) {
+    throw new ValidationError('One of those services no longer exists.');
+  }
+
+  const durationMinutes = services.reduce((total, service) => total + service.durationMinutes, 0);
+  if (durationMinutes <= 0) throw new ValidationError('Choose at least one service.');
+
+  const inactive = services.find((service) => !service.isActive);
+  if (inactive) throw new ValidationError(`${inactive.name} is no longer offered.`);
+
+  const notOnline = query.enforceOnlineRules
+    ? services.find((service) => !service.bookableOnline)
+    : undefined;
+  if (notOnline) throw new ValidationError(`${notOnline.name} has to be booked by phone.`);
+
+  /**
+   * Capability is filtered HERE rather than left to the caller.
+   *
+   * The booking clients narrow the roster before they ever show a chair, so
+   * `getAvailability` has never had to. A voice caller has no such list in front of
+   * them, so offering a time with a barber who does not do beards would be a booking the
+   * shop cannot honour.
+   */
+  const roster = await listBarbers({
+    includeInactive: false,
+    serviceIds: query.serviceIds,
+    ...(query.enforceOnlineRules ? { acceptsOnline: true } : {}),
+  });
+
+  const barbers =
+    query.barberId === undefined
+      ? roster
+      : roster.filter((barber) => barber.id === query.barberId);
+
+  if (barbers.length === 0) {
+    return {
+      offers: [],
+      durationMinutes,
+      reason:
+        query.barberId === undefined
+          ? 'No barber on today does all of those services.'
+          : 'That barber does not do all of those services.',
+    };
+  }
+
+  const barberIds = barbers.map((barber) => barber.id);
+
+  const today = DateTime.fromJSDate(now).setZone(settings.timezone).startOf('day');
+  const start = query.fromDate
+    ? DateTime.fromISO(query.fromDate, { zone: settings.timezone }).startOf('day')
+    : today;
+  if (!start.isValid) throw new ValidationError('That date could not be understood.');
+
+  // Never scan a day that has already gone; "next available from last Tuesday" is today.
+  const first = start < today ? today : start;
+  const maxDays = Math.max(1, query.maxDays ?? DEFAULT_MAX_DAYS);
+
+  /** The last reason any day produced, so an empty answer can still explain itself. */
+  let lastReason: string | null = null;
+
+  for (let offset = 0; offset < maxDays; offset += 1) {
+    const day = first.plus({ days: offset });
+    const date = day.toFormat('yyyy-MM-dd');
+
+    // The engine reports the horizon itself, but scanning past it is pure waste — every
+    // remaining day would return the same sentence.
+    if (day.diff(today, 'days').days > settings.bookingHorizonDays) {
+      return {
+        offers: [],
+        durationMinutes,
+        reason: `Bookings only open ${String(settings.bookingHorizonDays)} days ahead.`,
+      };
+    }
+
+    const window = localDayWindow(date, settings.timezone);
+    const snapshots = await loadDaySnapshots(barberIds, date, settings.timezone);
+
+    // The live queue only exists today, so every forward day skips the query entirely —
+    // the same skip `getAvailability` makes, for the same reason.
+    const isToday = date === today.toFormat('yyyy-MM-dd');
+    const queueBusy = isToday
+      ? await loadQueueCommitments(barberIds, window)
+      : new Map<string, Interval[]>();
+
+    const found: NextAvailableOffer[] = [];
+
+    for (const barber of barbers) {
+      const snapshot = snapshots.get(barber.id);
+      if (!snapshot) continue;
+
+      const result = computeAvailability({
+        date,
+        timezone: settings.timezone,
+        durationMinutes,
+        slotGranularityMinutes: settings.slotGranularityMinutes,
+        bufferMinutes: settings.bufferMinutes,
+        minimumNoticeMinutes: query.enforceOnlineRules ? settings.minimumNoticeMinutes : 0,
+        bookingHorizonDays: settings.bookingHorizonDays,
+        now,
+        barberSchedules: snapshot.barberSchedules,
+        shopHours: snapshot.shopHours,
+        shopClosures: snapshot.shopClosures,
+        scheduleExceptions: snapshot.scheduleExceptions,
+        busy: [...snapshot.appointments, ...(queueBusy.get(barber.id) ?? [])],
+      });
+
+      if (result.reason !== null) lastReason = result.reason;
+
+      for (const slot of result.slots) {
+        if (query.after && slot < query.after) continue;
+        found.push({
+          barberId: barber.id,
+          barberName: barber.displayName,
+          startAt: slot,
+        });
+      }
+    }
+
+    if (found.length > 0) {
+      // Earliest first; ties broken by the shop's own running order, so "any barber"
+      // offers the chair the shop would offer, not whichever id sorted first.
+      const order = new Map(barbers.map((barber, index) => [barber.id, index]));
+      found.sort(
+        (a, b) =>
+          a.startAt.getTime() - b.startAt.getTime() ||
+          (order.get(a.barberId) ?? 0) - (order.get(b.barberId) ?? 0),
+      );
+
+      /**
+       * With no barber asked for, one offer per distinct TIME.
+       *
+       * Somebody who said "anyone" wants a choice of times, not the same time three ways.
+       * Un-deduped, a three-chair shop that opens at ten answers "ten o'clock with Kasan,
+       * ten o'clock with Andre, or ten o'clock with Rico" — which is one option read out
+       * three times, and useless down a phone. The shop's running order decides who gets
+       * offered each slot, which is the tie-break already applied above.
+       *
+       * When a barber WAS asked for there is nothing to dedupe: every offer is theirs, and
+       * the times are already distinct.
+       */
+      let offers = found;
+
+      if (query.barberId === undefined) {
+        // Keeping the FIRST offer at each time, not the last. `new Map(entries)` would
+        // keep the last and hand every tie to whichever chair sorts last — undoing the
+        // sortOrder tie-break two lines above it.
+        const byTime = new Map<number, NextAvailableOffer>();
+        for (const offer of found) {
+          const key = offer.startAt.getTime();
+          if (!byTime.has(key)) byTime.set(key, offer);
+        }
+        offers = [...byTime.values()];
+      }
+
+      return { offers: offers.slice(0, limit), durationMinutes, reason: null };
+    }
+  }
+
+  return {
+    offers: [],
+    durationMinutes,
+    // The engine's own sentence when it gave one — the shop's words, not an invented
+    // excuse — and a bounded one when the scan simply ran out of days.
+    reason:
+      lastReason ??
+      `Nothing free in the next ${String(maxDays)} days. Please call the shop.`,
+  };
 }
 
 /**

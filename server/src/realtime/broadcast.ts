@@ -11,7 +11,7 @@
  * `broadcastQueueBoard`. Neither knows about the other.
  */
 
-import { SOCKET_ROOM } from '@francis/shared';
+import { SOCKET_ROOM, type AppointmentChanged } from '@francis/shared';
 
 import { logger } from '../lib/logger.js';
 import { toPublicQueueBoardDto, toQueueBoardDto } from '../mappers/queue.js';
@@ -53,6 +53,30 @@ export function broadcastQueueBoard(board: QueueBoard): void {
     );
   } catch (error) {
     logger.error({ err: error }, 'Queue broadcast failed');
+  }
+}
+
+/**
+ * Tells the shop that something moved on the calendar.
+ *
+ * `shop` only, and deliberately not `barber:{id}` as well: a barber joins BOTH rooms at
+ * handshake, so emitting to each would deliver the same change twice. The barber-scoped
+ * pages filter on `barberIds` themselves, which they have to do anyway to decide whether
+ * the change is worth a refetch.
+ *
+ * Kiosk and display are excluded by omission rather than by a check — they are not named
+ * here, so they cannot receive it. Those screens read the queue, which updates itself.
+ *
+ * Never throws, for the same reason as the board above: a failed broadcast must not roll
+ * back a booking that already committed, and the slow poll underneath picks up the pieces.
+ */
+export function broadcastAppointmentChanged(change: AppointmentChanged): void {
+  if (!io) return;
+
+  try {
+    io.to(SOCKET_ROOM.shop).emit('appointment:changed', change);
+  } catch (error) {
+    logger.error({ err: error }, 'Appointment broadcast failed');
   }
 }
 

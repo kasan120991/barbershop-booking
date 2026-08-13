@@ -83,6 +83,7 @@ export function toShopSettingsDto(settings: ShopSettingsModel, hours: ShopHoursM
     minimumNoticeMinutes: settings.minimumNoticeMinutes,
     walkInQueueEnabled: settings.walkInQueueEnabled,
     onlineBookingEnabled: settings.onlineBookingEnabled,
+    voiceBookingEnabled: settings.voiceBookingEnabled,
     hours: hours
       .slice()
       .sort((a, b) => a.dayOfWeek - b.dayOfWeek || a.openMinute - b.openMinute)
