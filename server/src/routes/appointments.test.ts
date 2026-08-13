@@ -21,7 +21,7 @@ import { afterAll, beforeEach, describe, expect, it } from 'vitest';
 import { createApp } from '../app.js';
 import { CSRF_HEADER } from '../config/constants.js';
 import { prisma } from '../lib/prisma.js';
-import { createAppointment } from '../services/booking.js';
+import { createAppointment, updateAppointmentStatus } from '../services/booking.js';
 import { hashPassword } from '../services/passwords.js';
 
 const app = createApp();
@@ -263,6 +263,42 @@ describe.skipIf(!reachable)('appointment writes are self-or-admin', () => {
 });
 
 // --- The read half, which already worked --------------------------------------
+
+describe.skipIf(!reachable)('the appointment DTO carries when the cut actually began', () => {
+  beforeEach(reseed);
+
+  /**
+   * The field `/today` draws its progress bar and its finish time from.
+   *
+   * Left off the DTO, that screen falls back to `startAt` — the timetable — so a client
+   * seated three hours early leaves the bar at zero and "done" reading two o'clock while
+   * the barber is mid-cut. It is not enough for the column to exist; it has to reach the
+   * screen.
+   */
+  it('is null until somebody sits down, then carries the real instant', async () => {
+    const appointmentId = await bookForOwner();
+    const session = await signIn(OWNER_EMAIL);
+
+    const list = async () =>
+      (
+        await request(server)
+          .get('/api/appointments')
+          .query({ from: '2026-08-11T00:00:00.000Z', to: '2026-08-12T00:00:00.000Z' })
+          .set('Cookie', session.cookies)
+          .expect(200)
+      ).body.appointments[0];
+
+    expect(await list()).toMatchObject({ startedAt: null });
+
+    const sat = new Date('2026-08-11T15:20:00.000Z');
+    await updateAppointmentStatus(appointmentId, 'IN_PROGRESS', sat);
+
+    const started = await list();
+    expect(started.startedAt).toBe(sat.toISOString());
+    // And it is genuinely a different fact from the slot they were booked into.
+    expect(started.startedAt).not.toBe(started.startAt);
+  });
+});
 
 describe.skipIf(!reachable)('GET /appointments scopes a barber to their own book', () => {
   beforeEach(reseed);

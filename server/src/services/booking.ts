@@ -802,6 +802,15 @@ export async function updateAppointmentStatus(
       // The injected clock, so a stamped time and a recomputed estimate cannot come
       // from two different moments.
       ...(next === 'CANCELLED' ? { cancelledAt: now } : {}),
+      /**
+       * When they ACTUALLY sat down — the moment somebody pressed Start, not the time
+       * the slot was booked for.
+       *
+       * This is what lets the estimator know a chair is occupied right now. Without it a
+       * client who turns up early, or a cut that runs long, leaves the wall display
+       * reading "Free now" at a barber who is visibly cutting hair.
+       */
+      ...(next === 'IN_PROGRESS' ? { startedAt: now } : {}),
     },
   });
 

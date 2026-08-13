@@ -88,6 +88,14 @@ export const queueChairDtoSchema = z.object({
   displayName: z.string(),
   /** The entry currently in this chair, if any. */
   nowServingEntryId: z.string().nullable(),
+  /**
+   * The `Appointment` in this chair — a booked client who has been started.
+   *
+   * Beside `nowServingEntryId`, never merged with it. The two ids address different
+   * tables and are finished by different endpoints, so one field would leave the Finish
+   * button guessing which one to call.
+   */
+  nowServingAppointmentId: z.string().nullable(),
   /** When this barber next has time, or null if they are done for the day. */
   freeFrom: z.iso.datetime().nullable(),
   waitingCount: z.int(),
@@ -143,6 +151,16 @@ export const publicQueueBoardDtoSchema = z.object({
     z.object({
       barberId: z.string(),
       displayName: z.string(),
+      /**
+       * Somebody is in this chair right now, from EITHER table.
+       *
+       * Separate from `nowServing` because a name is a courtesy and occupancy is the
+       * fact. It is what a card colours on and what stops "Free now" appearing over a
+       * barber who is visibly cutting hair — and it means whether the booked client is
+       * named is a one-line decision in the mapper rather than a change on the glass.
+       */
+      occupied: z.boolean(),
+      /** First name of whoever is in the chair — walk-in or booked. Never a surname. */
       nowServing: z.string().nullable(),
       /**
        * Whoever has been called up to this chair and has not sat down yet.

@@ -23,8 +23,13 @@ import { afterAll, beforeEach, describe, expect, it } from 'vitest';
 import { createApp } from '../app.js';
 import { CSRF_HEADER, DEVICE_TOKEN_HEADER } from '../config/constants.js';
 import { prisma } from '../lib/prisma.js';
+import { toPublicQueueBoardDto } from '../mappers/queue.js';
 import { getAvailability } from '../services/availability.js';
-import { cancelAppointment, createAppointment } from '../services/booking.js';
+import {
+  cancelAppointment,
+  createAppointment,
+  updateAppointmentStatus,
+} from '../services/booking.js';
 import { hashPassword } from '../services/passwords.js';
 import {
   assignQueueBarber,
@@ -529,6 +534,75 @@ describe.skipIf(!reachable)('the queue and the calendar share one day', () => {
     const board = await getQueueBoard({ now: NOW });
 
     expect(readyAt(board, entry.id)).toBe(new Date(NOW.getTime() + 45 * 60_000).toISOString());
+  });
+
+  /**
+   * The reported bug, end to end.
+   *
+   * A client sat down at 10:00 for a cut booked at 13:00. Every layer has to agree that
+   * the chair is occupied NOW: the stamp on the appointment, the query that finds it, the
+   * estimator that reserves it, and the board that reports it. This is the only test that
+   * proves the four are wired to each other.
+   */
+  it('holds the chair when a booked client sat down long before their slot', async () => {
+    const client = await prisma.client.create({
+      data: { phoneE164: CARLA, firstName: 'Carla' },
+    });
+
+    const later = new Date(NOW.getTime() + 3 * 60 * 60_000);
+    const appointment = await prisma.appointment.create({
+      data: {
+        clientId: client.id,
+        barberId,
+        startAt: later,
+        endAt: new Date(later.getTime() + 30 * 60_000),
+        durationMinutes: 30,
+        priceCentsTotal: 4500,
+      },
+    });
+
+    // Somebody presses Start three hours early. This is what stamps `startedAt`.
+    await updateAppointmentStatus(appointment.id, 'IN_PROGRESS', NOW);
+
+    const board = await getQueueBoard({ now: NOW });
+    const chair = board.chairs.find((row) => row.barberId === barberId);
+
+    expect(chair?.nowServingAppointmentId).toBe(appointment.id);
+    // Free from 10:30, not 10:00 — the timetable said this chair was free for three hours.
+    expect(chair?.freeFrom?.toISOString()).toBe(new Date(NOW.getTime() + 30 * 60_000).toISOString());
+    // And a walk-in arriving now is quoted after the cut rather than immediately.
+    const { entry } = await joinQueue(walkIn({ barberId, now: NOW }));
+    const withWalkIn = await getQueueBoard({ now: NOW });
+    expect(readyAt(withWalkIn, entry.id)).toBe(new Date(NOW.getTime() + 30 * 60_000).toISOString());
+  });
+
+  it('names the booked client on the public board, first name only', async () => {
+    const client = await prisma.client.create({
+      data: { phoneE164: CARLA, firstName: 'Carla', lastName: 'Ramirez' },
+    });
+
+    const appointment = await prisma.appointment.create({
+      data: {
+        clientId: client.id,
+        barberId,
+        startAt: NOW,
+        endAt: new Date(NOW.getTime() + 30 * 60_000),
+        durationMinutes: 30,
+        priceCentsTotal: 4500,
+      },
+    });
+    await updateAppointmentStatus(appointment.id, 'IN_PROGRESS', NOW);
+
+    const board = toPublicQueueBoardDto(await getQueueBoard({ now: NOW }));
+    const chair = board.chairs.find((row) => row.barberId === barberId);
+
+    expect(chair?.occupied).toBe(true);
+    expect(chair?.nowServing).toBe('Carla');
+
+    // The screen faces the whole room: a first name and nothing else.
+    const payload = JSON.stringify(board);
+    expect(payload).not.toContain('Ramirez');
+    expect(payload).not.toContain(CARLA);
   });
 });
 

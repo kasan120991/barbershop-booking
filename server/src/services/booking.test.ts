@@ -406,6 +406,43 @@ describe.skipIf(!reachable)('cancellation and status', () => {
     expect(staffCancelled.status).toBe('CANCELLED');
   });
 
+  it('stamps when the client actually sat down, not when they were due', async () => {
+    // Booked for 10:00; started at noon on the day they walked in. `startAt` is the
+    // timetable, `startedAt` is what happened — and the estimator needs the second one,
+    // or a chair reads free with somebody in it.
+    const appointment = await createAppointment(bookingInput());
+    const sat = new Date('2026-08-11T16:00:00.000Z');
+
+    const started = await updateAppointmentStatus(appointment.id, 'IN_PROGRESS', sat);
+
+    expect(started.startedAt?.toISOString()).toBe(sat.toISOString());
+    expect(started.startAt.toISOString()).toBe(SLOT.toISOString());
+  });
+
+  it('leaves startedAt alone for every other transition', async () => {
+    const appointment = await createAppointment(bookingInput());
+    expect(appointment.startedAt).toBeNull();
+
+    const cancelled = await updateAppointmentStatus(appointment.id, 'CANCELLED', NOW);
+    expect(cancelled.startedAt).toBeNull();
+    expect(cancelled.cancelledAt).not.toBeNull();
+  });
+
+  it('keeps the original sit-down time when the cut is finished', async () => {
+    const appointment = await createAppointment(bookingInput());
+    const sat = new Date('2026-08-11T16:00:00.000Z');
+
+    await updateAppointmentStatus(appointment.id, 'IN_PROGRESS', sat);
+    const done = await updateAppointmentStatus(
+      appointment.id,
+      'COMPLETED',
+      new Date(sat.getTime() + 45 * 60_000),
+    );
+
+    // Finishing must not overwrite it — a later status change is not a second sitting.
+    expect(done.startedAt?.toISOString()).toBe(sat.toISOString());
+  });
+
   it('walks the status transitions and refuses the nonsensical ones', async () => {
     const appointment = await createAppointment(bookingInput());
 

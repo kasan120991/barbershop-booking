@@ -25,6 +25,7 @@
 
 import {
   appointmentChangeTouches,
+  chairState as sharedChairState,
   formatCents,
   formatDuration,
   type AppointmentDto,
@@ -132,7 +133,10 @@ const seatedWalkIn = computed<QueueEntryDto | undefined>(() =>
 const seatedAppointment = computed<AppointmentDto | undefined>(() =>
   book.appointments.value.find(
     (appointment) =>
-      appointment.status === 'IN_PROGRESS' && shop.localDate(appointment.startAt) === today.value,
+      appointment.status === 'IN_PROGRESS' &&
+      // The day they SAT DOWN, not the day they were booked for — a client started early
+      // belongs to today's chair even when their slot says otherwise.
+      shop.localDate(appointment.startedAt ?? appointment.startAt) === today.value,
   ),
 );
 
@@ -188,8 +192,16 @@ const serving = computed(() => {
       services: appointment.services.map((service) => service.name).join(' + '),
       durationMinutes: appointment.durationMinutes,
       priceCents: appointment.priceCentsTotal,
-      // An appointment has no `startedAt`; its own slot is when it should have begun.
-      startedAt: appointment.startAt,
+      /**
+       * When they actually sat down, falling back to the slot only for a row stamped
+       * before the column existed.
+       *
+       * This used to be `appointment.startAt` unconditionally, with a comment saying an
+       * appointment has no `startedAt`. It has one now — and without it the progress bar
+       * and the finish time describe the timetable rather than the cut: a client seated
+       * three hours early left the bar at zero and "done" reading two o'clock.
+       */
+      startedAt: appointment.startedAt ?? appointment.startAt,
     };
   }
 
@@ -220,9 +232,25 @@ const progress = computed(() => {
 const chairState = computed(() => {
   const row = chair.value;
   if (row === undefined) return 'Walk-ins are off for your chair';
-  if (row.freeFrom === null) return 'Done for the day';
-  const freeSoon = asOf.value !== null && new Date(row.freeFrom).getTime() - asOf.value < 60_000;
-  return freeSoon ? 'Chair is open' : `Free from ${shop.clock(row.freeFrom)}`;
+
+  // Shared states, this screen's words — so a barber's phone and the board across the
+  // room cannot describe one chair differently, which is what the comment above asks for.
+  switch (
+    sharedChairState({
+      occupied: Boolean(row.nowServingEntryId ?? row.nowServingAppointmentId),
+      freeFrom: row.freeFrom,
+      asOf: asOf.value,
+    })
+  ) {
+    case 'OCCUPIED':
+      return 'In the chair';
+    case 'DONE_FOR_THE_DAY':
+      return 'Done for the day';
+    case 'OPEN_NOW':
+      return 'Chair is open';
+    default:
+      return `Free from ${shop.clock(row.freeFrom ?? '')}`;
+  }
 });
 
 const waitingForMe = computed(() => chair.value?.waitingCount ?? 0);

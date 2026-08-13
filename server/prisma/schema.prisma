@@ -475,6 +475,16 @@ model Appointment {
   source AppointmentSource @default(ONLINE)
   notes  String?           @db.Text
 
+  /// When the client ACTUALLY sat down, as opposed to `startAt`, which is when they were
+  /// due to.
+  ///
+  /// The two diverge constantly — a client turns up early, or a cut runs long — and the
+  /// walk-in queue has recorded exactly this distinction since it was built
+  /// (`QueueEntry.startedAt`). Without it the estimator can only reason about the
+  /// timetable, so a chair reads free while somebody is sitting in it: the bug this
+  /// column was added to fix was an appointment booked for 13:30 and started at 10:20.
+  startedAt       DateTime? @db.DateTime(3)
+
   /// Opaque token for the public cancellation link, so appointment ids stay unguessable.
   cancelToken     String    @unique @default(cuid())
   cancelledAt     DateTime? @db.DateTime(3)

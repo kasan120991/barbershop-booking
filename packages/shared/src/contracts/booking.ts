@@ -61,6 +61,15 @@ export const appointmentDtoSchema = z.object({
   clientName: z.string(),
   startAt: z.iso.datetime(),
   endAt: z.iso.datetime(),
+  /**
+   * When the client ACTUALLY sat down, or null if they have not.
+   *
+   * Distinct from `startAt`, which is when they were due — and the two diverge constantly.
+   * A progress bar or a finish time drawn from `startAt` describes the timetable rather
+   * than the cut: a client seated three hours early leaves the bar at zero and the "done"
+   * time hours out, which is exactly the bug this field was added for.
+   */
+  startedAt: z.iso.datetime().nullable(),
   durationMinutes: z.int(),
   priceCentsTotal: z.int(),
   status: z.enum(Object.values(APPOINTMENT_STATUS) as [string, ...string[]]),

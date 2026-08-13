@@ -157,6 +157,23 @@ Settled while building it:
 - **`QueueChairState.freeFrom` is measured before the waiting line is allocated**, so it answers
   "is this barber available" rather than "when does their line run out". Measure it after and a
   barber stands idle beside a card reading *free from 1:44*.
+- **A chair holds two kinds of work, and the board has to know about both.** A walk-in is a
+  `QueueEntry` at `IN_CHAIR`; a booked client is an `Appointment` at `IN_PROGRESS`. The
+  estimator learned appointments only as *scheduled* intervals, so a client who sat down at
+  10:20 for a 13:30 booking left the wall display announcing the barber as **free** while he
+  was visibly cutting hair. `Appointment.startedAt` is the fix — the exact mirror of
+  `QueueEntry.startedAt`, stamped in `updateAppointmentStatus`, and reserved by
+  `QueueChair.occupant` in the same first pass as a seated walk-in.
+- **An occupied chair is held until somebody presses Finish**, for both kinds of work:
+  `max(duration, elapsed)`. A cut running long is still running. The estimate genuinely moves
+  later as it overruns, which is the honest answer rather than churn.
+- **`nowServingEntryId` and `nowServingAppointmentId` stay separate.** The two ids address
+  different tables and are finished by different endpoints; one field would leave a Finish
+  button guessing which to call.
+- **`freeFrom === null` means "done for the day", never "free".** The wall display read it as
+  *Free now* — the exact inverse of the server and of both staff screens. All three now derive
+  their wording from `chairState()` in `shared/src/chair.ts`, which is where the four states
+  live precisely because neither Nuxt app has a test runner to pin them.
 - **The estimator's own input never includes queue time.** It schedules against appointments only;
   `getAvailability` then subtracts both. That ordering is what keeps it a one-way dependency
   instead of the queue rescheduling around itself and walking everyone later on every refresh.
@@ -337,9 +354,6 @@ Settled while building it:
   `apple_pay: active` immediately. The domain comes from `BOOKING_ORIGIN` and must be public
   HTTPS, so local development skips it silently rather than registering a host Apple will
   never validate.
-- **Webhooks:** one endpoint, signature-verified, **raw body**, idempotent by `event.id` persisted
-  in `WebhookEvent`. Connected-account events arrive with `event.account` — route by that.
-
 - **Webhooks:** one endpoint, signature-verified, **raw body**, idempotent by `event.id` persisted
   in `WebhookEvent`. Connected-account events arrive with `event.account` — route by that.
 
