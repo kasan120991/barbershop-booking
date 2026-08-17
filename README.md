@@ -8,7 +8,7 @@ book online or walk in and join a live queue on the shop tablet.
 ![The wall display — three chairs in use and the walk-in line, read from across the shop](docs/screenshots/display-board.png)
 
 The wall board. Names are cut to a first name and a last initial before they ever leave the
-server, because this screen faces the room — the staff app below gets the full record over a
+server, because this screen faces the room. The staff app below gets the full record over a
 different socket event.
 
 ## The four surfaces
@@ -16,9 +16,9 @@ different socket event.
 | | |
 |---|---|
 | ![Walk-in queue in the staff app](docs/screenshots/staff-queue.png) | ![Day calendar, one column per barber](docs/screenshots/staff-calendar.png) |
-| **Walk-in queue.** Every waiting client gets a projected seat time that respects the booked calendar, so a walk-in is never seated into an hour someone reserved online. Recomputed on every change and pushed to all four screens. | **The calendar.** One column per barber, built in house — per-resource day views are behind a paywall in every library worth using. Appointments in progress and projected walk-ins are drawn differently on purpose. |
+| **Walk-in queue.** Every waiting client gets a projected seat time that respects the booked calendar, so a walk-in is never seated into an hour someone reserved online. Recomputed on every change and pushed to all four screens. | **The calendar.** One column per barber, built in house, because per-resource day views are behind a paywall in every library worth using. Appointments in progress and projected walk-ins are drawn differently on purpose. |
 | ![Public booking, picking a time](docs/screenshots/booking-time.png) | ![The in-shop kiosk front door](docs/screenshots/kiosk-landing.png) |
-| **Public booking.** Slots come from the availability engine — the barber's schedule, minus exceptions, intersected with shop hours, minus existing appointments and time already promised to the queue. "Any barber" fans out and merges. | **The kiosk.** A walk-up front door on the shop tablet, showing the real current wait before anyone commits to it. Paired once to a device token that an admin can revoke; it can join the queue and read the board, and nothing else. |
+| **Public booking.** Slots come from the availability engine: the barber's schedule, minus exceptions, intersected with shop hours, minus existing appointments and time already promised to the queue. "Any barber" fans out and merges. | **The kiosk.** A walk-up front door on the shop tablet, showing the real current wait before anyone commits to it. Paired once to a device token that an admin can revoke; it can join the queue and read the board, and nothing else. |
 
 ## Packages
 
@@ -34,19 +34,19 @@ different socket event.
 Booking software is mostly forms. These are the parts that weren't.
 
 **One schema package is the API contract.** `@francis/shared` holds the zod schemas, types, and
-socket event definitions, and all three consumers — the server, the staff app, and the booking site
-— import from it. The server validates requests against the same schema the clients build them
+socket event definitions, and all three consumers import from it: the server, the staff app, and the
+booking site. The server validates requests against the same schema the clients build them
 from, so a field can't drift between API and UI without the typecheck failing across the workspace.
 This is the whole reason the project is a monorepo rather than three repos.
 
 **The payout model drove the money design.** Barbers rent a booth and keep 100% of every cut, which
-means the shop never owns their card revenue — it passes through. That's Stripe Connect, with each
+means the shop never owns their card revenue. It passes through. That's Stripe Connect, with each
 barber cashing out their own earnings daily rather than waiting on a shop payroll run. All money is
 stored as **integer cents**; nothing about a payout is allowed to depend on float arithmetic.
 
 **The walk-in queue is the realtime surface.** A client joins on the shop tablet at `/kiosk` and the
 queue updates on every staff device over Socket.IO. Walk-ins and online bookings compete for the
-same chairs, so the queue and the appointment schedule have to agree about who is next — that
+same chairs, so the queue and the appointment schedule have to agree about who is next. That
 reconciliation is the hardest logic in the project.
 
 **Times are stored UTC, and the server pins `TZ` rather than reconfiguring MySQL.** The local MySQL
